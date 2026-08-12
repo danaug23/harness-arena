@@ -166,7 +166,7 @@ class OpenCode(BaseInstalledAgent):
                     # openai package expects /v1/responses, which a local server
                     # does not implement.
                     "npm": "@ai-sdk/openai-compatible",
-                    "name": "harness-bench endpoint",
+                    "name": "harness-arena endpoint",
                     "options": {
                         "baseURL": self._base_url,
                         # A local server ignores the value but several clients

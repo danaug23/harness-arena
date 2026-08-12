@@ -1,4 +1,4 @@
-# gitleaks configuration for harness-bench.
+# gitleaks configuration for harness-arena.
 #
 # This repo handles API keys, so the secret scan in CI is load-bearing rather
 # than decorative. The only allowlisted values are the deliberately fake
@@ -11,7 +11,7 @@
 useDefault = true
 
 [[rules]]
-id = "harness-bench-endpoint-key"
+id = "harness-arena-endpoint-key"
 description = "API key assigned inline in a committed file"
 regex = '''(?i)(api_key|apikey|api-key)\s*[:=]\s*["']?(sk-|hf_|gsk_)[A-Za-z0-9_\-]{16,}'''
 [rules.allowlist]

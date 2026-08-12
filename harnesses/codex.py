@@ -95,7 +95,7 @@ class Codex(_HarborCodex):
             "provider_label",
             cli="-c",
             type="str",
-            default="harness-bench endpoint",
+            default="harness-arena endpoint",
             format=f"-c 'model_providers.{_PROVIDER}.name=\"{{value}}\"'",
         ),
         # The reason this file exists. No default: the served model's real

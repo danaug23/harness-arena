@@ -70,7 +70,7 @@ def _utc_now() -> str:
 
 @dataclass
 class Job:
-    """One `harness-bench bench` invocation."""
+    """One `harness-arena bench` invocation."""
 
     id: str
     argv: list[str]
@@ -294,14 +294,14 @@ class Supervisor:
         """
         endpoint = self._config.endpoint
         env = {
-            "HARNESS_BENCH_PROVIDER": endpoint.provider,
-            "HARNESS_BENCH_BASE_URL": endpoint.resolved_base_url(),
-            "HARNESS_BENCH_RUNS_DIR": str(self._config.resolved_runs_dir()),
+            "HARNESS_ARENA_PROVIDER": endpoint.provider,
+            "HARNESS_ARENA_BASE_URL": endpoint.resolved_base_url(),
+            "HARNESS_ARENA_RUNS_DIR": str(self._config.resolved_runs_dir()),
         }
         if endpoint.model:
-            env["HARNESS_BENCH_MODEL"] = endpoint.model
+            env["HARNESS_ARENA_MODEL"] = endpoint.model
         if endpoint.label:
-            env["HARNESS_BENCH_LABEL"] = endpoint.label
+            env["HARNESS_ARENA_LABEL"] = endpoint.label
 
         key = endpoint.resolve_api_key()
         if key:
@@ -310,7 +310,7 @@ class Supervisor:
             name = endpoint.api_key_env or endpoint.resolved_provider().default_api_key_env
             if name:
                 env[name] = key
-                env["HARNESS_BENCH_API_KEY_ENV"] = name
+                env["HARNESS_ARENA_API_KEY_ENV"] = name
         return env
 
     def _launch(self, argv: list[str], *, kind: str, harnesses: list[str]) -> Job:
@@ -320,7 +320,7 @@ class Supervisor:
         preexisting = {p.name for p in runs_dir.iterdir() if p.is_dir()}
 
         job_id = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-        log_dir = runs_dir / ".harness-bench" / "logs"
+        log_dir = runs_dir / ".harness-arena" / "logs"
         log_dir.mkdir(parents=True, exist_ok=True)
         log_path = log_dir / f"{kind}-{job_id}.log"
 

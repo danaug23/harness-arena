@@ -91,7 +91,7 @@ def _get_json(
         request.add_header("Authorization", f"Bearer {api_key}")
     # OpenRouter attributes requests by these headers and rejects some clients
     # without a User-Agent. Harmless everywhere else.
-    request.add_header("User-Agent", "harness-bench")
+    request.add_header("User-Agent", "harness-arena")
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             return json.loads(response.read().decode("utf-8"))
@@ -420,7 +420,7 @@ def _post_responses(
     payload = json.dumps(body).encode("utf-8")
     request = urllib.request.Request(url, data=payload, method="POST")
     request.add_header("Content-Type", "application/json")
-    request.add_header("User-Agent", "harness-bench")
+    request.add_header("User-Agent", "harness-arena")
     api_key = endpoint.resolve_api_key()
     if api_key:
         request.add_header("Authorization", f"Bearer {api_key}")
@@ -559,7 +559,7 @@ def measure_speed(
         f"{root}/chat/completions", data=payload, method="POST"
     )
     request.add_header("Content-Type", "application/json")
-    request.add_header("User-Agent", "harness-bench")
+    request.add_header("User-Agent", "harness-arena")
     if api_key:
         request.add_header("Authorization", f"Bearer {api_key}")
 

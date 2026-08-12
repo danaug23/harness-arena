@@ -55,7 +55,7 @@ def health_url(base_url: str) -> str:
 def _probe_once(url: str, api_key: str = "") -> dict[str, Any]:
     """One read-only sample: reachable or not, and how slowly."""
     request = urllib.request.Request(url, method="GET")
-    request.add_header("User-Agent", "harness-bench-watchdog")
+    request.add_header("User-Agent", "harness-arena-watchdog")
     if api_key:
         request.add_header("Authorization", f"Bearer {api_key}")
 

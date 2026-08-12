@@ -88,7 +88,7 @@ def harbor_executable() -> str:
     if not found:
         raise RuntimeError(
             "`harbor` is not on PATH. Run through the project env, e.g.\n"
-            "  conda run --no-capture-output -n harness-bench python -m bench.runner ..."
+            "  conda run --no-capture-output -n harness-arena python -m bench.runner ..."
         )
     return found
 

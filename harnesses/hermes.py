@@ -281,7 +281,7 @@ class Hermes(HarborHermes):
             self.logger.warning(
                 f"Harbor could not decode the hermes session ({exc}); "
                 f"no ATIF trajectory for this trial. Token totals are "
-                f"unaffected. Run through `harness-bench bench`, which sets "
+                f"unaffected. Run through `harness-arena bench`, which sets "
                 f"PYTHONUTF8=1, to avoid this."
             )
 

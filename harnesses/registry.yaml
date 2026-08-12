@@ -240,7 +240,7 @@ defaults:
   # clock -- often around a tenth -- is non-LLM work (harness install per trial,
   # plus image pulls and verifiers) during which the GPU sits idle. Pipelining
   # hides that behind the previous trial's generation without changing anything
-  # the model sees. Measure your own share with `harness-bench throughput`.
+  # the model sees. Measure your own share with `harness-arena throughput`.
   #
   # Leave at 1 for a single-slot self-hosted server. Raise BOTH numbers together
   # only if the server actually has matching parallel slots (llama-server: -np;
@@ -262,7 +262,7 @@ defaults:
   #   ~140 tok/s  (small MoE, few active params)         ->   4.0
   #   hosted frontier API                                ->   1.0
   #
-  # Run `harness-bench probe --speed` to measure yours. It reports a floor:
+  # Run `harness-arena probe --speed` to measure yours. It reports a floor:
   # the arithmetic covers *generation* only, and the agent budget also has to
   # absorb prompt processing on every turn -- which grows with the context --
   # plus the wall clock of the commands the agent runs. Doubling its

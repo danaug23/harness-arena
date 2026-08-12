@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>harness-bench // terminal-bench harness matrix</title>
+<title>harness-arena // terminal-bench harness matrix</title>
 <style>
 /* ---------------------------------------------------------------------------
    Design tokens.
@@ -2169,7 +2169,7 @@ function render() {
   if (!models.length) {
     app.innerHTML = `<div class="empty">
       No runs yet. Start one:<br><br>
-      <code>conda run --no-capture-output -n harness-bench python -m bench.runner</code>
+      <code>conda run --no-capture-output -n harness-arena python -m bench.runner</code>
     </div>`;
     return;
   }
@@ -2417,8 +2417,8 @@ function wireEvents() {
    exception: they update in place, touching no input.
 ------------------------------------------------------------------------ */
 
-const TOKEN = window.__HARNESS_BENCH_TOKEN__ || null;
-const READONLY = !!window.__HARNESS_BENCH_READONLY__ || !TOKEN;
+const TOKEN = window.__HARNESS_ARENA_TOKEN__ || null;
+const READONLY = !!window.__HARNESS_ARENA_READONLY__ || !TOKEN;
 
 const cp = {
   tab: "results",
@@ -2444,7 +2444,7 @@ async function api(path, { method = "GET", body } = {}) {
     opts.headers["Content-Type"] = "application/json";
     opts.body = JSON.stringify(body);
   }
-  if (method !== "GET" && TOKEN) opts.headers["X-Harness-Bench-Token"] = TOKEN;
+  if (method !== "GET" && TOKEN) opts.headers["X-Harness-Arena-Token"] = TOKEN;
   const res = await fetch(path, opts);
   let payload = null;
   try { payload = await res.json(); } catch (_) { /* empty body */ }
@@ -3618,10 +3618,10 @@ async function pollSupervisor() {
   if (before !== after && cp.tab === "maintenance") renderTab("maintenance");
 }
 
-if (window.__HARNESS_BENCH_SNAPSHOT__) {
+if (window.__HARNESS_ARENA_SNAPSHOT__) {
   // Exported snapshot: data is inlined, there is no server to poll and no
   // control plane to offer, so the tabs that write are removed entirely.
-  state.data = window.__HARNESS_BENCH_SNAPSHOT__;
+  state.data = window.__HARNESS_ARENA_SNAPSHOT__;
   setLive(false, "snapshot");
   document.querySelectorAll("#tabs button").forEach((b) => {
     if (b.getAttribute("data-tab") !== "results") b.remove();

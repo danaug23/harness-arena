@@ -42,7 +42,7 @@ def check(label: str, got: object, want: object) -> None:
 
 def clear_env() -> None:
     for name in list(os.environ):
-        if name.startswith("HARNESS_BENCH_") or name in (
+        if name.startswith("HARNESS_ARENA_") or name in (
             "OPENROUTER_API_KEY",
             "OPENAI_API_KEY",
         ):
@@ -52,7 +52,7 @@ def clear_env() -> None:
 def write_config(tmp: str, body: str) -> Path:
     path = Path(tmp) / "config.yaml"
     path.write_text(body, encoding="utf-8")
-    os.environ["HARNESS_BENCH_CONFIG"] = str(path)
+    os.environ["HARNESS_ARENA_CONFIG"] = str(path)
     return path
 
 
@@ -66,14 +66,14 @@ def test_precedence() -> None:
         check("file beats default", load().endpoint.resolved_base_url(),
               "http://from-file:1/v1")
 
-        os.environ["HARNESS_BENCH_BASE_URL"] = "http://from-env:2/v1"
+        os.environ["HARNESS_ARENA_BASE_URL"] = "http://from-env:2/v1"
         check("env beats file", load().endpoint.resolved_base_url(),
               "http://from-env:2/v1")
     clear_env()
 
     # No file at all must still be a usable configuration, or `git clone &&
-    # harness-bench probe` fails for someone running a stock local server.
-    os.environ["HARNESS_BENCH_CONFIG"] = str(Path(tempfile.gettempdir()) / "nope.yaml")
+    # harness-arena probe` fails for someone running a stock local server.
+    os.environ["HARNESS_ARENA_CONFIG"] = str(Path(tempfile.gettempdir()) / "nope.yaml")
     check("missing file is not an error", load().endpoint.provider,
           "openai-compatible")
     clear_env()
@@ -229,7 +229,7 @@ def test_saved_config_round_trips() -> None:
             ),
             runs_dir="elsewhere",
         ).save(path)
-        os.environ["HARNESS_BENCH_CONFIG"] = str(path)
+        os.environ["HARNESS_ARENA_CONFIG"] = str(path)
         reloaded = load()
         check("key round-trips", reloaded.endpoint.resolve_api_key(), KEY)
         check("model round-trips", reloaded.endpoint.model, "a/b")

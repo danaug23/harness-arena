@@ -139,7 +139,7 @@ def main() -> int:
         # -- the page carries its token -------------------------------------
         with urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=20) as resp:
             page = resp.read().decode()
-        found = re.search(r'__HARNESS_BENCH_TOKEN__ = "([^"]+)"', page)
+        found = re.search(r'__HARNESS_ARENA_TOKEN__ = "([^"]+)"', page)
         check("token injected into the page", bool(found and found[1] == TOKEN), True)
 
         # -- key redaction ---------------------------------------------------

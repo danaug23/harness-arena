@@ -327,7 +327,7 @@ python tests/test_tokens.py
 a trajectory needs on the order of 20-100 minutes of pure generation, so at `1.0×` almost
 everything is killed mid-task, scoring identically to a wrong answer.
 
-**Fix.** Measure your throughput with `harness-bench probe --speed` and take the multiplier it
+**Fix.** Measure your throughput with `harness-arena probe --speed` and take the multiplier it
 recommends. Default is `16.0`.
 
 **But check first.** Once the budget is roughly right, very few failures are timeouts. Most
@@ -340,7 +340,7 @@ count before spending wall clock.
 **Cause.** Harbor pulls the task image inside the environment-start budget.
 `mteb-retrieve` is 21.6 GB; `pytorch-model-recovery` is 14.7 GB and took 428 s alone.
 
-**Fix.** `harness-bench prepull` before the run, plus
+**Fix.** `harness-arena prepull` before the run, plus
 `environment_build_timeout_multiplier: 4.0` as a backstop.
 
 ---
@@ -466,10 +466,10 @@ model's reasoning is. Use the server's own `/slots` counters or the recorded tok
 
 ```bash
 # does everything needed to run actually work?
-harness-bench doctor
+harness-arena doctor
 
 # what is the endpoint serving, how many slots, and how fast?
-harness-bench probe --speed
+harness-arena probe --speed
 
 # is it generating right now? (llama-server)
 curl -s http://localhost:8080/slots
@@ -478,8 +478,8 @@ curl -s http://localhost:8080/slots
 docker ps --format "{{.Names}} | {{.Status}}"
 
 # progress and results
-harness-bench collect
-harness-bench throughput
+harness-arena collect
+harness-arena throughput
 
 # per-phase breakdown of a finished trial
 python -c "import json,sys;d=json.load(open(sys.argv[1]));print(json.dumps({k:d.get(k) for k in ('task_name','verifier_result','exception_info','agent_execution')},indent=2,default=str))" \

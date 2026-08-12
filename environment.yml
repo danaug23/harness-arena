@@ -1,5 +1,5 @@
 # conda env create -f environment.yml
-# conda activate harness-bench
+# conda activate harness-arena
 # pip install -e .
 #
 # A plain virtualenv works just as well -- this exists because conda is common
@@ -12,7 +12,7 @@
 # upgrade can change agent defaults or reward handling underneath a running
 # experiment. Every run records the version it used, so bumping the pin is safe
 # as long as you re-run the comparisons you care about.
-name: harness-bench
+name: harness-arena
 channels:
   - conda-forge
 dependencies:

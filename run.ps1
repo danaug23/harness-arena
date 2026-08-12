@@ -1,14 +1,14 @@
 <#
 .SYNOPSIS
-  Convenience wrapper for harness-bench on Windows.
+  Convenience wrapper for harness-arena on Windows.
 
 .DESCRIPTION
-  Forwards everything to the harness-bench CLI. This exists only so the repo
-  works before `pip install -e .`; once installed, `harness-bench <command>` is
+  Forwards everything to the harness-arena CLI. This exists only so the repo
+  works before `pip install -e .`; once installed, `harness-arena <command>` is
   the same thing and works on every platform.
 
   Python is located in this order:
-    1. $env:HARNESS_BENCH_PYTHON, if set
+    1. $env:HARNESS_ARENA_PYTHON, if set
     2. an active virtualenv / conda env ($env:VIRTUAL_ENV, $env:CONDA_PREFIX)
     3. python / python3 on PATH
 
@@ -37,9 +37,9 @@ param(
 $ErrorActionPreference = 'Stop'
 
 function Find-Python {
-  if ($env:HARNESS_BENCH_PYTHON) {
-    if (Test-Path $env:HARNESS_BENCH_PYTHON) { return $env:HARNESS_BENCH_PYTHON }
-    throw "HARNESS_BENCH_PYTHON is set to '$($env:HARNESS_BENCH_PYTHON)' but that path does not exist."
+  if ($env:HARNESS_ARENA_PYTHON) {
+    if (Test-Path $env:HARNESS_ARENA_PYTHON) { return $env:HARNESS_ARENA_PYTHON }
+    throw "HARNESS_ARENA_PYTHON is set to '$($env:HARNESS_ARENA_PYTHON)' but that path does not exist."
   }
 
   foreach ($prefix in @($env:VIRTUAL_ENV, $env:CONDA_PREFIX)) {
@@ -64,7 +64,7 @@ No Python found.
 Create the environment first, then re-run:
 
   conda env create -f environment.yml
-  conda activate harness-bench
+  conda activate harness-arena
 
 or with a plain virtualenv:
 
@@ -74,7 +74,7 @@ or with a plain virtualenv:
 
 or point this script at an interpreter directly:
 
-  `$env:HARNESS_BENCH_PYTHON = 'C:\path\to\python.exe'
+  `$env:HARNESS_ARENA_PYTHON = 'C:\path\to\python.exe'
 "@
 }
 

@@ -7,14 +7,14 @@ Python file. See [Adding a harness](README.md#adding-a-harness).
 ## Setup
 
 ```bash
-git clone https://github.com/danaug23/harness-bench
-cd harness-bench
+git clone https://github.com/danaug23/harness-arena
+cd harness-arena
 
 python -m venv .venv && source .venv/bin/activate    # or: conda env create -f environment.yml
 pip install -e .
 
-harness-bench init      # point it at your model server
-harness-bench doctor    # confirm Docker, Harbor and the endpoint work
+harness-arena init      # point it at your model server
+harness-arena doctor    # confirm Docker, Harbor and the endpoint work
 ```
 
 ## Tests
@@ -100,6 +100,6 @@ Two things reviewers will look for:
 
 Numbers are only comparable when the model, subset, and `agent_timeout_multiplier`
 all match, the dashboard refuses to pair runs that differ. When you report a
-result, say which model and multiplier produced it. `harness-bench export`
+result, say which model and multiplier produced it. `harness-arena export`
 writes a self-contained snapshot; check what is in it before posting one, since
 it inlines run manifests.

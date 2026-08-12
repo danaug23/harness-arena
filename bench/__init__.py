@@ -1,4 +1,4 @@
-"""harness-bench: run Terminal-Bench 2 across agent harnesses on one model."""
+"""harness-arena: run Terminal-Bench 2 across agent harnesses on one model."""
 
 from pathlib import Path
 

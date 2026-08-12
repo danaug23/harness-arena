@@ -6,10 +6,10 @@ repo belongs here, and nothing here is committed.
 
 Precedence, lowest to highest::
 
-    built-in defaults  ->  config.yaml  ->  HARNESS_BENCH_* env vars  ->  CLI flags
+    built-in defaults  ->  config.yaml  ->  HARNESS_ARENA_* env vars  ->  CLI flags
 
 ``config.yaml`` sits next to this repo's root and is gitignored;
-``config.example.yaml`` is the committed template. ``HARNESS_BENCH_CONFIG``
+``config.example.yaml`` is the committed template. ``HARNESS_ARENA_CONFIG``
 overrides the location, which is what lets one checkout drive several endpoints.
 
 Secrets
@@ -269,7 +269,7 @@ class Config:
         payload = self.to_dict(redact=False)
         text = yaml.dump(payload, default_flow_style=False, sort_keys=False)
         header = (
-            "# harness-bench local configuration -- NOT committed (see .gitignore).\n"
+            "# harness-arena local configuration -- NOT committed (see .gitignore).\n"
             "# Treat this file as a credential if endpoint.api_key is set.\n"
             f"# Template: {EXAMPLE_NAME}\n\n"
         )
@@ -289,7 +289,7 @@ class Config:
 
 
 def config_path() -> Path:
-    override = os.environ.get("HARNESS_BENCH_CONFIG")
+    override = os.environ.get("HARNESS_ARENA_CONFIG")
     return Path(override).expanduser() if override else (ROOT / CONFIG_NAME)
 
 
@@ -304,14 +304,14 @@ def _coerce_bool(value: str) -> bool:
 #: Environment overrides, mapped to their dotted config path. These exist so a
 #: container or CI job can point the rig at an endpoint without writing a file.
 ENV_OVERRIDES: dict[str, str] = {
-    "HARNESS_BENCH_PROVIDER": "endpoint.provider",
-    "HARNESS_BENCH_BASE_URL": "endpoint.base_url",
-    "HARNESS_BENCH_API_KEY_ENV": "endpoint.api_key_env",
-    "HARNESS_BENCH_MODEL": "endpoint.model",
-    "HARNESS_BENCH_LABEL": "endpoint.label",
-    "HARNESS_BENCH_RUNS_DIR": "runs_dir",
-    "HARNESS_BENCH_HOST": "dashboard.host",
-    "HARNESS_BENCH_PORT": "dashboard.port",
+    "HARNESS_ARENA_PROVIDER": "endpoint.provider",
+    "HARNESS_ARENA_BASE_URL": "endpoint.base_url",
+    "HARNESS_ARENA_API_KEY_ENV": "endpoint.api_key_env",
+    "HARNESS_ARENA_MODEL": "endpoint.model",
+    "HARNESS_ARENA_LABEL": "endpoint.label",
+    "HARNESS_ARENA_RUNS_DIR": "runs_dir",
+    "HARNESS_ARENA_HOST": "dashboard.host",
+    "HARNESS_ARENA_PORT": "dashboard.port",
 }
 
 # Deliberately absent from ENV_OVERRIDES: a variable that sets the literal key.
@@ -379,7 +379,7 @@ def load(path: Path | None = None) -> Config:
 
     A missing file is not an error: the built-in defaults plus environment
     variables are a complete configuration for a local endpoint on the default
-    port, which is what makes ``git clone && harness-bench probe`` work.
+    port, which is what makes ``git clone && harness-arena probe`` work.
     """
     target = path or config_path()
     data: dict[str, Any] = {}

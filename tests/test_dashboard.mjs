@@ -5,7 +5,7 @@
  * throw nor silently render nothing -- including on the cases that only show up
  * once, like an empty runs/ directory or a run that died during setup.
  *
- *   harness-bench collect --out /tmp/results.json
+ *   harness-arena collect --out /tmp/results.json
  *   node tests/test_dashboard.mjs /tmp/results.json
  *
  * With no argument it synthesizes a fixture, so it runs before any benchmark has.
@@ -132,7 +132,7 @@ const sandbox = {
   },
   // A token present means the page believes it has a live control plane, which
   // is what the control-plane render paths are gated on.
-  window: { __HARNESS_BENCH_TOKEN__: "test-token" },
+  window: { __HARNESS_ARENA_TOKEN__: "test-token" },
   fetch: async () => { throw new Error("no server"); },
   matchMedia: () => ({ matches: true }),
   setInterval: () => 0, setTimeout: () => 0, clearTimeout: () => {},

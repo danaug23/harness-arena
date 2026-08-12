@@ -1,6 +1,6 @@
 # Architecture
 
-How harness-bench works internally: the data flow, each module's job, and the contract an
+How harness-arena works internally: the data flow, each module's job, and the contract an
 adapter has to satisfy.
 
 ## Contents
@@ -65,7 +65,7 @@ would each measure the other's queueing delay as if it were their own latency.
 ### `bench/config.py`
 
 Everything that differs between two people running this repo, resolved in one place:
-**defaults → `config.yaml` → `HARNESS_BENCH_*` env vars → CLI flags**.
+**defaults → `config.yaml` → `HARNESS_ARENA_*` env vars → CLI flags**.
 
 Also holds the provider catalog. A `Provider` records what an endpoint can tell you about
 itself, which is the only thing that actually varies between them:

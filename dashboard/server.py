@@ -1,4 +1,4 @@
-"""Live results server and control plane for harness-bench.
+"""Live results server and control plane for harness-arena.
 
 Two jobs. It rescans ``runs/`` on each request (behind a short cache) so a
 benchmark in flight shows up as it progresses -- Harbor writes each trial's
@@ -16,7 +16,7 @@ listens on localhost" stopped being sufficient. A page in your browser can send
 requests to 127.0.0.1, and DNS rebinding can make a hostile domain resolve
 there. So every mutating request must clear four gates:
 
-1. **A per-process token** in ``X-Harness-Bench-Token``. The token is minted at
+1. **A per-process token** in ``X-Harness-Arena-Token``. The token is minted at
    startup and injected into the page as it is served. A *custom* header is the
    point: cross-origin JavaScript cannot set one without a CORS preflight, and
    this server answers no preflight and sends no CORS headers.
@@ -82,7 +82,7 @@ from bench.supervisor import (
 HERE = Path(__file__).resolve().parent
 INDEX_HTML = HERE / "index.html"
 CACHE_TTL_S = 2.0
-TOKEN_HEADER = "X-Harness-Bench-Token"
+TOKEN_HEADER = "X-Harness-Arena-Token"
 
 #: A request body is a config blob or a run spec. Anything larger is a mistake
 #: or an attempt to exhaust memory.
@@ -372,7 +372,7 @@ class App:
         return result
 
     def doctor(self) -> dict[str, Any]:
-        """The same checks as `harness-bench doctor`, as structured data."""
+        """The same checks as `harness-arena doctor`, as structured data."""
         import shutil
         import subprocess
 
@@ -515,7 +515,7 @@ class App:
         return result
 
     def export(self, payload: dict[str, Any]) -> dict[str, Any]:
-        name = str(payload.get("name") or "harness-bench-snapshot.html")
+        name = str(payload.get("name") or "harness-arena-snapshot.html")
         if "/" in name or "\\" in name or not name.endswith(".html"):
             raise ApiError("Snapshot name must be a bare *.html filename.")
         out = export_snapshot(self.runs_dir, ROOT / name)
@@ -537,9 +537,9 @@ def export_snapshot(runs_dir: Path, out: Path) -> Path:
     index = build_index(runs_dir)
     html = INDEX_HTML.read_text(encoding="utf-8")
     seed = (
-        "<script>window.__HARNESS_BENCH_SNAPSHOT__ = "
+        "<script>window.__HARNESS_ARENA_SNAPSHOT__ = "
         + json.dumps(index)
-        + ";window.__HARNESS_BENCH_READONLY__ = true;</script>"
+        + ";window.__HARNESS_ARENA_READONLY__ = true;</script>"
     )
     marker = "</head>"
     html = html.replace(marker, f"{seed}\n{marker}", 1)
@@ -549,7 +549,7 @@ def export_snapshot(runs_dir: Path, out: Path) -> Path:
 
 def make_handler(app: App) -> type[BaseHTTPRequestHandler]:
     class Handler(BaseHTTPRequestHandler):
-        server_version = "harness-bench"
+        server_version = "harness-arena"
         protocol_version = "HTTP/1.1"
 
         #: Whether this request's body has been read. Class-level so the paths
@@ -740,7 +740,7 @@ def make_handler(app: App) -> type[BaseHTTPRequestHandler]:
             # Hand the page its token. Same-origin script can read it; a
             # cross-origin page cannot read this response at all.
             seed = (
-                "<script>window.__HARNESS_BENCH_TOKEN__ = "
+                "<script>window.__HARNESS_ARENA_TOKEN__ = "
                 + json.dumps(app.token)
                 + ";</script>"
             )
@@ -885,7 +885,7 @@ def main(argv: list[str] | None = None) -> int:
     app = App(config, runs_dir, token, bind_host=host, read_only=args.read_only)
     server = ThreadingHTTPServer((host, port), make_handler(app))
     url = f"http://{host}:{port}/"
-    print(f"harness-bench dashboard: {url}")
+    print(f"harness-arena dashboard: {url}")
     print(f"code:     {ROOT}")
     print(f"config:   {config_path() if config_path().exists() else '(defaults)'}")
     print(f"watching: {runs_dir}")

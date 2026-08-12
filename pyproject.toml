@@ -3,7 +3,7 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "harness-bench"
+name = "harness-arena"
 version = "0.1.0"
 description = "Benchmark agent harnesses against one model, on Terminal-Bench 2."
 authors = [{ name = "Dan August" }]
@@ -40,11 +40,11 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/danaug23/harness-bench"
-Issues = "https://github.com/danaug23/harness-bench/issues"
+Homepage = "https://github.com/danaug23/harness-arena"
+Issues = "https://github.com/danaug23/harness-arena/issues"
 
 [project.scripts]
-harness-bench = "bench.cli:main"
+harness-arena = "bench.cli:main"
 
 [tool.setuptools]
 # `harnesses` holds the adapter classes Harbor imports by dotted path, and
@@ -54,6 +54,10 @@ packages = ["bench", "harnesses", "dashboard"]
 [tool.setuptools.package-data]
 dashboard = ["index.html"]
 bench = ["subsets/*.txt"]
+# The harness catalog is data, not code, so it needs naming here or an install
+# from a wheel ends up with no harnesses at all: `bench/__init__.py` resolves
+# REGISTRY_PATH next to the package, and the file simply would not be there.
+harnesses = ["registry.yaml"]
 
 [tool.ruff]
 line-length = 100

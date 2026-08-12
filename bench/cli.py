@@ -1,7 +1,7 @@
-"""The single entrypoint: ``harness-bench <command>``.
+"""The single entrypoint: ``harness-arena <command>``.
 
 Dispatch is deliberately thin. Each command forwards its remaining arguments to
-the module that owns them, so ``harness-bench bench --help`` is the runner's own
+the module that owns them, so ``harness-arena bench --help`` is the runner's own
 help and there is exactly one definition of every flag. The two commands defined
 here -- ``init`` and ``doctor`` -- are the ones with no module of their own,
 because they exist to get someone from ``git clone`` to a working run.
@@ -48,21 +48,21 @@ COMMANDS: dict[str, tuple[str, str]] = {
 def usage() -> str:
     width = max(len(name) for name in COMMANDS)
     lines = [
-        "harness-bench -- benchmark agent harnesses against one model.",
+        "harness-arena -- benchmark agent harnesses against one model.",
         "",
-        "usage: harness-bench <command> [options]",
+        "usage: harness-arena <command> [options]",
         "",
         "commands:",
     ]
     lines += [f"  {name:<{width}}  {help_}" for name, (_, help_) in COMMANDS.items()]
     lines += [
         "",
-        "`harness-bench <command> --help` shows that command's own options.",
+        "`harness-arena <command> --help` shows that command's own options.",
         "",
         "first time here:",
-        "  harness-bench init      point it at your model server",
-        "  harness-bench doctor    confirm Docker, Harbor and the endpoint work",
-        "  harness-bench dash      open the dashboard",
+        "  harness-arena init      point it at your model server",
+        "  harness-arena doctor    confirm Docker, Harbor and the endpoint work",
+        "  harness-arena dash      open the dashboard",
     ]
     return "\n".join(lines)
 
@@ -92,14 +92,14 @@ def cmd_init(argv: list[str]) -> int:
 
     if not sys.stdin.isatty():
         print(
-            f"harness-bench init needs a terminal. Copy config.example.yaml to "
+            f"harness-arena init needs a terminal. Copy config.example.yaml to "
             f"{CONFIG_NAME} and edit it instead.",
             file=sys.stderr,
         )
         return 1
 
     print(textwrap.dedent(f"""
-        harness-bench setup
+        harness-arena setup
         -------------------
         This writes {target.name}, which is gitignored. Nothing here is committed.
     """).strip())
@@ -150,7 +150,7 @@ def cmd_init(argv: list[str]) -> int:
     written = config.save()
     print(f"\nWrote {written}")
     print(f"\n{describe(config)}")
-    print("\nNext:  harness-bench doctor")
+    print("\nNext:  harness-arena doctor")
     return 0
 
 
@@ -180,7 +180,7 @@ def cmd_doctor(argv: list[str]) -> int:
     Ordered so the cheapest and most commonly wrong things are reported first.
     Every failure prints the specific next action rather than just a verdict.
     """
-    print("harness-bench doctor\n")
+    print("harness-arena doctor\n")
     failures: list[str] = []
 
     # --- which code is actually running ---
@@ -210,7 +210,7 @@ def cmd_doctor(argv: list[str]) -> int:
         where = (
             str(path)
             if path.exists()
-            else f"no {path.name} -- using defaults (run `harness-bench init`)"
+            else f"no {path.name} -- using defaults (run `harness-arena init`)"
         )
         _check("config loads", True, where)
         print(textwrap.indent(describe(config), "        "))
@@ -306,7 +306,7 @@ def cmd_doctor(argv: list[str]) -> int:
     if failures:
         print(f"{len(failures)} problem(s): {', '.join(failures)}")
         return 1
-    print("All checks passed.  Next:  harness-bench bench --subset stratified-25")
+    print("All checks passed.  Next:  harness-arena bench --subset stratified-25")
     return 0
 
 
@@ -339,7 +339,7 @@ def main(argv: list[str] | None = None) -> int:
     if args[0] in ("-V", "--version"):
         from bench import __version__
 
-        print(f"harness-bench {__version__}")
+        print(f"harness-arena {__version__}")
         return 0
 
     command, rest = args[0], args[1:]
@@ -357,14 +357,14 @@ def main(argv: list[str] | None = None) -> int:
     # `export` is `dash` with a destination, which is worth a command of its own
     # because writing a shareable file is a different intent from serving one.
     if command == "export" and not any(a.startswith("--export") for a in rest):
-        rest = ["--export", "harness-bench-snapshot.html", *rest]
+        rest = ["--export", "harness-arena-snapshot.html", *rest]
 
     try:
         return int(module.main(rest) or 0)
     except ConfigError as exc:
         # A configuration problem is the user's to fix, not a traceback to read.
         print(f"\nconfiguration error: {exc}", file=sys.stderr)
-        print("\nRun `harness-bench init` to set this up.", file=sys.stderr)
+        print("\nRun `harness-arena init` to set this up.", file=sys.stderr)
         return 1
     except KeyboardInterrupt:
         print("\ninterrupted.", file=sys.stderr)

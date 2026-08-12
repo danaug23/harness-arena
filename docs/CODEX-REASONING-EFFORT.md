@@ -41,7 +41,7 @@ contradicted them. §14 is what that machine changed.
 
 ## 1. What this rig is trying to do
 
-harness-bench runs several agent harnesses (hermes, omp, opencode, minion,
+harness-arena runs several agent harnesses (hermes, omp, opencode, minion,
 Claude Code, Codex) against **one model on one endpoint**, on Terminal-Bench 2,
 and compares them. The entire value of the comparison rests on one idea:
 
@@ -538,7 +538,7 @@ Record the full table. This is the single most valuable artifact to bring back.
 ### Step 3, What the rig's probe concludes
 
 ```bash
-conda activate harness-bench     # or your venv
+conda activate harness-arena     # or your venv
 python -c "
 from bench.config import load
 from bench.probe import supports_reasoning_effort
@@ -642,7 +642,7 @@ a random port) and needs a working Harbor import but no live endpoint.
 ### Step 8, A short real run
 
 ```bash
-harness-bench run --harness codex --n-tasks 2
+harness-arena run --harness codex --n-tasks 2
 python -c "
 import json;m=json.load(open('runs/<job>/harness-bench.json'))
 print(m['reasoning_effort'], m['reasoning_effort_source'])"

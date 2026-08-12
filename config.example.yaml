@@ -1,17 +1,17 @@
-# harness-bench configuration.
+# harness-arena configuration.
 #
 #   cp config.example.yaml config.yaml     (config.yaml is gitignored)
 #
-# Every setting is optional. With no config.yaml at all, harness-bench talks to
+# Every setting is optional. With no config.yaml at all, harness-arena talks to
 # an OpenAI-compatible server on http://localhost:8080/v1 -- which is what
 # llama-server, vLLM, LM Studio and friends serve by default.
 #
 # Anything here can also be set from the environment, which is the better route
 # for CI and containers:
 #
-#   HARNESS_BENCH_PROVIDER  HARNESS_BENCH_BASE_URL  HARNESS_BENCH_MODEL
-#   HARNESS_BENCH_LABEL     HARNESS_BENCH_RUNS_DIR  HARNESS_BENCH_API_KEY_ENV
-#   HARNESS_BENCH_HOST      HARNESS_BENCH_PORT
+#   HARNESS_ARENA_PROVIDER  HARNESS_ARENA_BASE_URL  HARNESS_ARENA_MODEL
+#   HARNESS_ARENA_LABEL     HARNESS_ARENA_RUNS_DIR  HARNESS_ARENA_API_KEY_ENV
+#   HARNESS_ARENA_HOST      HARNESS_ARENA_PORT
 #
 # Precedence: defaults -> config.yaml -> environment -> command-line flags.
 

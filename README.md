@@ -1,4 +1,4 @@
-# harness-bench
+# harness-arena
 
 Benchmark **agent harnesses** against one model, on Terminal-Bench 2.
 
@@ -114,16 +114,16 @@ are bounded because every one of them changes what a run *measures*.
 ## Quick start
 
 Clone, build the environment, point it at a model, open the browser.
-**Everything after `harness-bench dash` happens in the UI**: the endpoint URL,
+**Everything after `harness-arena dash` happens in the UI**: the endpoint URL,
 the model, context sizes, timeouts, pre-pulling the task images, starting and
 stopping runs. There is no config file to write by hand.
 
 ```bash
-git clone https://github.com/danaug23/harness-bench
-cd harness-bench
+git clone https://github.com/danaug23/harness-arena
+cd harness-arena
 
 conda env create -f environment.yml      # or: python -m venv .venv
-conda activate harness-bench             #     .venv\Scripts\Activate.ps1
+conda activate harness-arena             #     .venv\Scripts\Activate.ps1
 pip install -e .
 ```
 
@@ -141,7 +141,7 @@ the differences do not announce themselves:
 Then start the dashboard and do the rest in the browser:
 
 ```bash
-harness-bench dash                       # http://127.0.0.1:8420/
+harness-arena dash                       # http://127.0.0.1:8420/
 ```
 
 | Tab | What you do there |
@@ -274,10 +274,10 @@ compare runs made weeks apart.
 Prefer a terminal? Everything the UI does has a command:
 
 ```bash
-harness-bench init                       # point it at your model server
-harness-bench doctor                     # check Docker, Harbor, endpoint, disk
-harness-bench prepull                    # cache task images (once per machine)
-harness-bench bench --subset stratified-25
+harness-arena init                       # point it at your model server
+harness-arena doctor                     # check Docker, Harbor, endpoint, disk
+harness-arena prepull                    # cache task images (once per machine)
+harness-arena bench --subset stratified-25
 ```
 
 Windows PowerShell without installing: `.\run.ps1 <command>`.
@@ -327,8 +327,8 @@ Linux/macOS without installing: `./run.sh <command>`.
 ### Install
 
 ```bash
-git clone https://github.com/danaug23/harness-bench
-cd harness-bench
+git clone https://github.com/danaug23/harness-arena
+cd harness-arena
 
 python -m venv .venv
 source .venv/bin/activate          # Windows: .\.venv\Scripts\Activate.ps1
@@ -339,7 +339,7 @@ Or with conda:
 
 ```bash
 conda env create -f environment.yml
-conda activate harness-bench
+conda activate harness-arena
 pip install -e .
 ```
 
@@ -351,7 +351,7 @@ care about.
 ### Verify
 
 ```bash
-harness-bench doctor
+harness-arena doctor
 ```
 
 That checks configuration, Harbor, the Docker daemon, disk space, and whether
@@ -368,7 +368,7 @@ under a minute. If it does, Docker, the dataset, and the verifier all work.
 ### First-run setup
 
 ```bash
-harness-bench prepull        # cache all task images (~60 GB, one time per machine)
+harness-arena prepull        # cache all task images (~60 GB, one time per machine)
 ```
 
 Do this before your first benchmark. Harbor otherwise pulls each task image
@@ -380,7 +380,7 @@ task to `EnvironmentStartTimeoutError` rather than scoring it.
 
 ## Configuration
 
-`harness-bench init` writes `config.yaml`, which is **gitignored**.
+`harness-arena init` writes `config.yaml`, which is **gitignored**.
 `config.example.yaml` documents every setting.
 
 Precedence: **defaults → `config.yaml` → environment → command-line flags.**
@@ -418,7 +418,7 @@ export OPENROUTER_API_KEY=...
 That is all. Each provider's conventional variable is picked up automatically.
 To use a different variable, set `endpoint.api_key_env`.
 
-`harness-bench init` can also store a literal key in `config.yaml`. That file is
+`harness-arena init` can also store a literal key in `config.yaml`. That file is
 gitignored and written `0600`, but once you do that, treat it as a credential.
 
 Keys are scrubbed out of run manifests, printed commands, and exported
@@ -453,7 +453,7 @@ Pipelining is close to free. On a single-slot server a meaningful slice of wall
 clock, often around a tenth, is non-LLM work: harness installs, image pulls
 and verifiers, with the GPU idle throughout. Overlapping that changes nothing
 the model sees, so pass rates stay comparable to runs made without it. Measure
-your own share with `harness-bench throughput`.
+your own share with `harness-arena throughput`.
 
 Raising `n_concurrent_agents` above your server's slot count does **not** buy
 throughput: requests queue rather than share, and the degradation is severe
@@ -510,7 +510,7 @@ process dies, and Harbor records a non-zero exit. **That is not evidence about
 the harness**, but scored naively it costs the harness a task, and a working
 adapter starts to look broken.
 
-harness-bench handles it in two places:
+harness-arena handles it in two places:
 
 - **During the run.** A trial that dies of an infrastructure failure is retried
   once (`max_retries`). Nothing at retry time can tell a dropped connection from
@@ -587,7 +587,7 @@ the benchmark silently measures your hardware instead of the harness.
 Measure it:
 
 ```bash
-harness-bench probe --speed
+harness-arena probe --speed
 ```
 
 That times one uncontended request and recommends a multiplier. Roughly:
@@ -624,19 +624,19 @@ pair them.
 ## Commands
 
 ```
-harness-bench init          Create config.yaml interactively
-harness-bench doctor        Check everything needed to run
-harness-bench probe         Identify the model (--speed to time it)
-harness-bench bench         Run the benchmark, one harness after another
-harness-bench dash          Serve the live dashboard
-harness-bench export        Write a standalone snapshot HTML
-harness-bench collect       Print a text summary of all runs
-harness-bench throughput    Wall clock and LLM utilization per run
-harness-bench prepull       Cache task images ahead of a run
-harness-bench subset        Regenerate a stratified task subset
+harness-arena init          Create config.yaml interactively
+harness-arena doctor        Check everything needed to run
+harness-arena probe         Identify the model (--speed to time it)
+harness-arena bench         Run the benchmark, one harness after another
+harness-arena dash          Serve the live dashboard
+harness-arena export        Write a standalone snapshot HTML
+harness-arena collect       Print a text summary of all runs
+harness-arena throughput    Wall clock and LLM utilization per run
+harness-arena prepull       Cache task images ahead of a run
+harness-arena subset        Regenerate a stratified task subset
 ```
 
-`harness-bench <command> --help` shows that command's own options.
+`harness-arena <command> --help` shows that command's own options.
 
 ### `bench` flags
 
@@ -658,7 +658,7 @@ harness-bench subset        Regenerate a stratified task subset
 Anything not covered goes straight through to Harbor after `--`:
 
 ```bash
-harness-bench bench --subset stratified-25 -- --max-retries 2
+harness-arena bench --subset stratified-25 -- --max-retries 2
 ```
 
 ---
@@ -963,7 +963,7 @@ experiment: 25 of the 89 tasks, difficulty-stratified to match the full set's
 mix, stride-sampled over sorted names so it is deterministic and not
 alphabetically biased. Every harness runs that identical list, which is what
 keeps the *harness* comparison valid even though the absolute pass rate is not
-leaderboard-comparable. Regenerate or resize with `harness-bench subset`.
+leaderboard-comparable. Regenerate or resize with `harness-arena subset`.
 
 An ad-hoc `--n-tasks 3` run is a different animal. It gets a `smoke` badge.
 Named subsets keep their name as the badge instead.
@@ -992,7 +992,7 @@ than the harness.
 ## The dashboard
 
 ```bash
-harness-bench dash          # http://127.0.0.1:8420
+harness-arena dash          # http://127.0.0.1:8420
 ```
 
 A single-screen grid; panels scroll internally rather than the page. Below
@@ -1069,7 +1069,7 @@ consequences, so:
   into a harness field is rejected with an explanation rather than saved.
 
 None of that makes it safe to expose. Keep it on loopback or put it behind an
-authenticating proxy. `harness-bench dash --read-only` serves results with the
+authenticating proxy. `harness-arena dash --read-only` serves results with the
 control plane disabled entirely.
 
 **Stop really stops.** Killing the runner is not enough: Docker owns the task
@@ -1084,7 +1084,7 @@ runs; `cd` does not change how Python resolves imports. The tab prints the code
 root, config path and runs directory, and `doctor` warns when your working
 directory is a different checkout.
 
-`harness-bench export` writes a standalone snapshot with the data inlined; it
+`harness-arena export` writes a standalone snapshot with the data inlined; it
 works offline with no server and carries no control plane. It inlines run
 manifests, so look at what is in one before publishing it.
 
@@ -1131,7 +1131,7 @@ output instead of the built-in fixture.
 ## Project layout
 
 ```
-harness-bench             the CLI (bench/cli.py); run.ps1 / run.sh wrap it
+harness-arena             the CLI (bench/cli.py); run.ps1 / run.sh wrap it
 config.example.yaml       every setting, documented; copy to config.yaml
 environment.yml           conda env with harbor pinned
 pyproject.toml            package metadata and the console script
@@ -1147,7 +1147,7 @@ harnesses/
                            environment variables, nothing more)
 
 bench/
-  cli.py                  the `harness-bench` command; init and doctor
+  cli.py                  the `harness-arena` command; init and doctor
   config.py               layered config, provider catalog, secret redaction
   probe.py                endpoint -> model fingerprint + label; speed probe
   runner.py               registry + model -> `harbor run`, one harness at a time
@@ -1176,14 +1176,14 @@ which weights are on *your* disk.
 
 ## Credits
 
-harness-bench was created and is maintained by **Dan August**
+harness-arena was created and is maintained by **Dan August**
 ([@danaug23](https://github.com/danaug23)).
 
 If it is useful in published work, please cite it:
 
 ```
-Dan August. harness-bench: comparing agent harnesses on one held-constant model.
-2026. https://github.com/danaug23/harness-bench
+Dan August. harness-arena: comparing agent harnesses on one held-constant model.
+2026. https://github.com/danaug23/harness-arena
 ```
 
 ---

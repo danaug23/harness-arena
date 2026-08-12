@@ -131,13 +131,13 @@ def test_child_env_pins_config(tmp: Path) -> None:
         runs_dir=str(tmp),
     )
     env = Supervisor(config)._child_endpoint_env()
-    check("provider pinned", env["HARNESS_BENCH_PROVIDER"], "openrouter")
-    check("base url pinned", env["HARNESS_BENCH_BASE_URL"], "https://example.invalid/api/v1")
-    check("model pinned", env["HARNESS_BENCH_MODEL"], "a/b")
-    check("label pinned", env["HARNESS_BENCH_LABEL"], "Test")
+    check("provider pinned", env["HARNESS_ARENA_PROVIDER"], "openrouter")
+    check("base url pinned", env["HARNESS_ARENA_BASE_URL"], "https://example.invalid/api/v1")
+    check("model pinned", env["HARNESS_ARENA_MODEL"], "a/b")
+    check("label pinned", env["HARNESS_ARENA_LABEL"], "Test")
     # The key travels in the environment; an argv is world-readable.
     check("key passed by env var", env["OPENROUTER_API_KEY"], "sk-test-key-abcdefghij")
-    check("  under a named variable", env["HARNESS_BENCH_API_KEY_ENV"], "OPENROUTER_API_KEY")
+    check("  under a named variable", env["HARNESS_ARENA_API_KEY_ENV"], "OPENROUTER_API_KEY")
 
 
 def test_a_running_benchmarks_containers_are_not_orphans(tmp: Path) -> None:
