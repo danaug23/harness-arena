@@ -1,3 +1,8 @@
+<p align="center">
+  <img src="https://raw.githubusercontent.com/danaug23/harness-arena/main/docs/images/harness-arena-banner.jpg"
+       alt="harness-arena" width="900">
+</p>
+
 # harness-arena
 
 Benchmark **agent harnesses** against one model, on Terminal-Bench 2.
@@ -41,7 +46,7 @@ endpoint setup, the harness catalog and maintenance, across five tabs.
 
 ![The results tab: pass rate with confidence intervals, a task-by-harness
 matrix, what a solve costs against what a trial costs, and a live tail of the
-running agent](docs/images/dashboard-results.png)
+running agent](https://raw.githubusercontent.com/danaug23/harness-arena/main/docs/images/dashboard-results.png)
 
 **Results.** Pass rates carry 95 % Wilson intervals, because at 89 tasks a
 five-point gap is usually noise. If the whiskers overlap you have not shown a
@@ -59,7 +64,7 @@ concurrency, so the dashboard says wall-clock is not comparable across them
 instead of quietly ranking them together.
 
 ![The harnesses tab: the harness catalog, each entry with its adapter,
-model reference and placeholder-only kwargs](docs/images/harness-catalog.png)
+model reference and placeholder-only kwargs](https://raw.githubusercontent.com/danaug23/harness-arena/main/docs/images/harness-catalog.png)
 
 **Checks passed** sits beside each pass rate, deliberately quieter and set
 apart. Scoring is all-or-nothing, so a run that passes five of six checks on
