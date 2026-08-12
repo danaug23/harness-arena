@@ -1,0 +1,33 @@
+# stratified-25: 25 of 89 Terminal-Bench 2 tasks
+# Difficulty-stratified, stride-sampled over sorted names. Deterministic:
+# regenerating from the same dataset yields the same list.
+# dataset commit: 2fd12b88aafdd04a52c298e3940bcb189f9766d6
+#
+#   easy      1 of   4  (4.5% of the full set)
+#   medium   16 of  55  (61.8% of the full set)
+#   hard      8 of  30  (33.7% of the full set)
+adaptive-rejection-sampler
+bn-fit-modify
+build-pov-ray
+code-from-image
+crack-7z-hash
+distribution-search
+dna-assembly
+financial-document-processor
+fix-code-vulnerability
+headless-terminal
+large-scale-text-editing
+llm-inference-batching-scheduler
+merge-diff-arc-agi-task
+mteb-retrieve
+overfull-hbox
+password-recovery
+polyglot-c-py
+protein-assembly
+pytorch-model-recovery
+query-optimize
+rstan-to-pystan
+sqlite-db-truncate
+torch-pipeline-parallelism
+winning-avg-corewars
+write-compressor

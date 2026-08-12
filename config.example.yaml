@@ -1,0 +1,95 @@
+# harness-bench configuration.
+#
+#   cp config.example.yaml config.yaml     (config.yaml is gitignored)
+#
+# Every setting is optional. With no config.yaml at all, harness-bench talks to
+# an OpenAI-compatible server on http://localhost:8080/v1 -- which is what
+# llama-server, vLLM, LM Studio and friends serve by default.
+#
+# Anything here can also be set from the environment, which is the better route
+# for CI and containers:
+#
+#   HARNESS_BENCH_PROVIDER  HARNESS_BENCH_BASE_URL  HARNESS_BENCH_MODEL
+#   HARNESS_BENCH_LABEL     HARNESS_BENCH_RUNS_DIR  HARNESS_BENCH_API_KEY_ENV
+#   HARNESS_BENCH_HOST      HARNESS_BENCH_PORT
+#
+# Precedence: defaults -> config.yaml -> environment -> command-line flags.
+
+endpoint:
+  # "openai-compatible" -- anything serving /v1: llama-server, vLLM, Ollama,
+  #                        LM Studio, TGI, SGLang, or your own gateway.
+  # "openrouter"        -- https://openrouter.ai (needs a key and a model id).
+  provider: openai-compatible
+
+  # Where the model is served. Include the /v1 suffix.
+  #   llama-server / LM Studio   http://localhost:8080/v1
+  #   vLLM                       http://localhost:8000/v1
+  #   Ollama                     http://localhost:11434/v1
+  #   another machine on the LAN http://192.0.2.50:8002/v1
+  base_url: http://localhost:8080/v1
+
+  # --- API key -------------------------------------------------------------
+  #
+  # Name the environment variable that holds your key. The key itself stays in
+  # your shell or secret manager and never touches this file.
+  #
+  #   api_key_env: OPENROUTER_API_KEY
+  #
+  # If unset, the provider's conventional variable is used automatically
+  # (OPENROUTER_API_KEY for openrouter, OPENAI_API_KEY otherwise), so exporting
+  # that one variable is usually all you need.
+  api_key_env: ""
+
+  # A literal key. Only the setup UI writes this. config.yaml is gitignored, but
+  # once this is set, treat the file as a credential -- do not paste it into an
+  # issue, a snapshot, or a screen share.
+  api_key: ""
+
+  # Required only when the endpoint cannot report which model it is serving.
+  # A local server has one model loaded and is probed automatically; OpenRouter
+  # lists hundreds, so name the one you mean:
+  #   model: qwen/qwen3-coder
+  model: ""
+
+  # Display label for this model in the dashboard. Left empty, it is derived
+  # from the served weights (usually the GGUF filename) and you are asked to
+  # confirm it once per distinct set of weights.
+  label: ""
+
+  # Context window handed to every harness. 0 asks the server.
+  #
+  # llama.cpp answers on /props and is believed. Ollama cannot: it publishes
+  # only the model's architectural maximum, never the window the server was
+  # started with, so set this to match OLLAMA_CONTEXT_LENGTH. When nothing
+  # knows, a conservative 4096 is used and the run says so -- overshooting
+  # truncates silently and scores as a wrong answer.
+  context_window: 0
+
+  # Reasoning effort for harnesses that send one -- Codex sends it on every
+  # request. Empty asks the endpoint, which is the right answer almost always:
+  # llama.cpp accepts any effort, while Ollama answers 400 "does not support
+  # thinking" for a model that cannot, and that reply kills every trial at its
+  # first request. The run records the value it used and where it came from, so
+  # a thinking run is never quietly compared against a non-thinking one.
+  #
+  # Set it only to pin a comparison to one effort, e.g. "high" or "none".
+  reasoning_effort: ""
+
+dashboard:
+  # Loopback on purpose. The dashboard reads run output and can start and stop
+  # benchmarks; binding it to 0.0.0.0 hands that to anyone who can reach the
+  # port. Put it behind an authenticating proxy if you need remote access.
+  host: 127.0.0.1
+  port: 8420
+  open_browser: true
+
+# Where Harbor writes job directories. Relative paths resolve against the repo
+# root. These get large -- one full run is several GB of container logs and
+# trajectories -- so point this at a roomy disk if the checkout is on a small one.
+runs_dir: runs
+
+# Record the machine's hostname in each run manifest. Off by default: manifests
+# are what `export` inlines into shareable snapshots, so this leaks a machine
+# name into anything you publish. Turn it on if you compare runs across your own
+# fleet and want to know which box produced which numbers.
+record_hostname: false

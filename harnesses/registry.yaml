@@ -1,0 +1,286 @@
+# Harness catalog -- the extension point of this rig.
+#
+# Adding a harness = one block here. You only need a Python adapter in
+# harnesses/<name>.py when Harbor does not already ship an agent for it
+# (`harbor run --help` lists the built-ins).
+#
+# NEVER put a credential in this file -- it is committed. Use {api_key}, which
+# is resolved at run time from your environment or gitignored config.yaml and
+# scrubbed back out of run manifests and printed commands.
+#
+# Placeholders filled in from the live probe of the LLM endpoint:
+#   {model_id}     served model id, e.g. my-model or qwen/qwen3-coder
+#   {base_url}     e.g. http://localhost:8080/v1
+#   {host}         e.g. localhost
+#   {n_ctx}        the window every harness is told: endpoint.context_window
+#                  if set, else what the server reported, else a conservative
+#                  fallback. Not necessarily what the server reported -- an
+#                  Ollama endpoint reports nothing at all.
+#   {max_tokens}   max output tokens (n_ctx / 8, floored at 4096)
+#   {api_key}      resolved API key, or "local" when the endpoint needs none
+#   {label}        the model's display label
+#
+# Keys:
+#   label        display name in the dashboard
+#   vendor       who publishes the harness, shown beside the label
+#   repo         upstream URL, shown in the run log
+#   agent        Harbor built-in agent name, or "module.path:ClassName"
+#   model_ref    value passed to `harbor run --model`
+#   version      pin recorded with the run, when the harness has one
+#   min_context_window
+#                smallest window the harness will start on. A run below it is
+#                refused before launching, because the harness would fail the
+#                same way on every task and Harbor can only report that as a
+#                non-zero exit.
+#   host_env     env vars set on the harbor process itself. Required for
+#                agents that read os.environ directly at run() time -- Harbor's
+#                built-in hermes agent does exactly this for OPENAI_BASE_URL,
+#                so --ae alone is not enough for it.
+#   agent_env    env vars injected into the container via --ae
+#   agent_kwargs constructor kwargs passed via --ak
+
+harnesses:
+  hermes:
+    label: "Hermes Agent"
+    vendor: "Nous Research"
+    repo: "https://github.com/NousResearch/hermes-agent"
+    # Local subclass of Harbor's built-in hermes agent. The built-in one only
+    # forwards OPENAI_BASE_URL, which hermes-agent does not read, so every
+    # trial 401s against OpenRouter. See harnesses/hermes.py.
+    agent: "harnesses.hermes:Hermes"
+    model_ref: "local/{model_id}"
+    # hermes refuses to initialise below this and exits non-zero, which Harbor
+    # can only report as NonZeroAgentExitCodeError -- once per task, plus the
+    # retry. Declared so the run is refused up front with the reason.
+    min_context_window: 64000
+    agent_kwargs:
+      base_url: "{base_url}"
+      api_key: "{api_key}"
+      # hermes auto-detects the window and its own example config names a local
+      # server with a custom num_ctx as a case where that is wrong.
+      context_window: "{n_ctx}"
+      max_tokens: "{max_tokens}"
+
+  minion:
+    label: "minion"
+    vendor: "Sentdex"
+    repo: "https://github.com/Sentdex/minion"
+    # Ships a headless mode written for this exact purpose (`--prompt-file`,
+    # "Designed for headless benchmark harnesses (Harbor/Terminal-Bench)").
+    # Configured through a *named source* rather than a single base URL; a bare
+    # MINION_BASE_URL leaves it with "no source configured". See
+    # harnesses/minion.py.
+    agent: "harnesses.minion:Minion"
+    model_ref: "local/{model_id}"
+    agent_kwargs:
+      base_url: "{base_url}"
+      api_key: "{api_key}"
+      # No context_window: minion reads /props from the server itself, which is
+      # the same source this rig probes. Only the output cap is set, so all four
+      # harnesses generate under the same ceiling.
+      max_tokens: "{max_tokens}"
+
+  omp:
+    label: "oh-my-pi"
+    vendor: "can1357"
+    repo: "https://github.com/can1357/oh-my-pi"
+    agent: "harnesses.omp:Omp"
+    model_ref: "local/{model_id}"
+    agent_kwargs:
+      base_url: "{base_url}"
+      api_key: "{api_key}"
+      context_window: "{n_ctx}"
+      max_tokens: "{max_tokens}"
+
+  claude-code:
+    label: "Claude Code"
+    vendor: "Anthropic"
+    repo: "https://github.com/anthropics/claude-code"
+    # Harbor's built-in agent, with no adapter: everything Claude Code needs
+    # here is an environment variable, so there is nothing for Python to do.
+    #
+    # It speaks the Anthropic Messages API, not OpenAI's, so this only works
+    # against a server that implements /v1/messages. llama.cpp does -- verified
+    # on this rig's endpoint, including SSE streaming, tool_use with a
+    # stop_reason of "tool_use", /v1/messages/count_tokens, and an Anthropic
+    # usage object with cache_read_input_tokens. No translating proxy is
+    # involved, which is the point: a proxy would be a second implementation
+    # sitting in the measurement path.
+    agent: "claude-code"
+    # Bare id, not "local/{model_id}". With a custom base URL the built-in
+    # agent passes model_name through unchanged, and the prefix would reach the
+    # server as part of the model name.
+    model_ref: "{model_id}"
+    # Claude Code sends a fixed prompt before the task is even mentioned:
+    # measured at 22,208 tokens against this rig's endpoint (claude-cli
+    # 2.1.226, an isolated config dir so no MCP servers are loaded), of which
+    # 18,455 is the schemas for its 26 built-in tools. Below roughly 32K that
+    # overhead leaves no room to work in, and under ~24K the first request
+    # exceeds the window outright and every trial fails identically.
+    #
+    # Measured with a developer's own config loaded the same prompt is 33,182
+    # tokens across 88 tools, so treat this as a floor for the container case
+    # rather than a constant -- an image carrying MCP servers pays more.
+    min_context_window: 32768
+    host_env:
+      # Root, not {base_url}: the Anthropic client appends "/v1/messages"
+      # itself, so a URL ending in /v1 becomes /v1/v1/messages. Measured -- see
+      # base_url_root in bench/runner.py. Set on the harbor process rather than
+      # via --ae because the built-in agent reads this one straight from
+      # os.environ, the same reason hermes needs host_env.
+      ANTHROPIC_BASE_URL: "{base_url_root}"
+      # Also read directly from os.environ by the built-in agent.
+      CLAUDE_CODE_MAX_OUTPUT_TOKENS: "{max_tokens}"
+    agent_env:
+      # Resolved through the agent's own env lookup, so --ae is enough. A local
+      # server ignores the value, but Claude Code will not start without one.
+      ANTHROPIC_API_KEY: "{api_key}"
+      # Claude Code sizes auto-compaction from a built-in table of model ids.
+      # A self-hosted model is not in it, so it assumes 200k and says so:
+      # "is not a model this version of Claude Code recognizes, so auto-compact
+      # will keep this session within 200k tokens". Against a server serving
+      # less, that is a harness silently working to the wrong window -- exactly
+      # what this rig holds constant. Setting this removes the warning and the
+      # guess.
+      CLAUDE_CODE_MAX_CONTEXT_TOKENS: "{n_ctx}"
+
+  codex:
+    label: "Codex CLI"
+    vendor: "OpenAI"
+    repo: "https://github.com/openai/codex"
+    # Thin subclass of Harbor's built-in codex agent. The one thing a registry
+    # block cannot express is the context window: Codex reads it from
+    # model_context_window in config.toml and has no env var for it. See
+    # harnesses/codex.py.
+    agent: "harnesses.codex:Codex"
+    model_ref: "{model_id}"
+    agent_env:
+      # Named by the provider block's env_key, and used by Harbor's built-in
+      # auth.json setup.
+      OPENAI_API_KEY: "{api_key}"
+    agent_kwargs:
+      # Keeps its /v1, unlike Claude Code above: Codex requests
+      # <base_url>/responses. Both spellings of the one URL are correct, for
+      # different clients.
+      #
+      # Passed through exactly as configured, like every other harness here.
+      # llama.cpp answers /responses and /v1/responses alike, so either
+      # spelling of endpoint.base_url works against it; a server that only
+      # routes /v1/* (vLLM does) needs the /v1 present in config.yaml, which
+      # is what config.example.yaml already tells you to write.
+      base_url: "{base_url}"
+      context_window: "{n_ctx}"
+      # llama.cpp implements /v1/responses -- streaming, function calls and a
+      # usage object with cached_tokens all verified on this endpoint. Set
+      # wire_api=chat for an OpenAI-compatible server that only serves
+      # /v1/chat/completions.
+      wire_api: "responses"
+      # Probed, not fixed. Codex puts a reasoning object on every request and
+      # offers no way to leave the effort out, so the effort has to be one the
+      # server will accept: llama.cpp takes any, Ollama answers 400 "does not
+      # support thinking" for a model that cannot, and that 400 kills every
+      # trial at its first request. Resolved per endpoint by
+      # bench.runner.effective_reasoning_effort and recorded in the manifest.
+      reasoning_effort: "{reasoning_effort}"
+
+  opencode:
+    label: "opencode"
+    vendor: "anomalyco"
+    repo: "https://github.com/anomalyco/opencode"
+    # Installed from the released binary rather than npm, which needs Bun.
+    # Runs with --auto (no permission prompts) and --pure (no external plugins,
+    # so the measurement is the harness rather than the image's plugin set).
+    agent: "harnesses.opencode:OpenCode"
+    model_ref: "local/{model_id}"
+    agent_kwargs:
+      base_url: "{base_url}"
+      api_key: "{api_key}"
+      context_window: "{n_ctx}"
+      max_tokens: "{max_tokens}"
+
+# Hosts every harness is allowed to reach during the agent phase, on top of the
+# LLM endpoint (which is added automatically). Every harness here installs
+# itself from the internet inside the task container, so this is the union of
+# what all of them need: GitHub for clones and release assets, npm and Node for
+# the JavaScript ones, PyPI for the Python ones.
+allow_agent_hosts:
+  # Claude Code's installer (bootstrap.sh) and the release binary it fetches.
+  # Only needed on a dataset that restricts egress -- Terminal-Bench 2 runs the
+  # agent phase with a public network policy and Harbor warns the allowlist is
+  # ignored there, so this is untested against a genuinely closed network; a
+  # CDN host it redirects to may also be required.
+  - "downloads.claude.ai"
+  - "raw.githubusercontent.com"
+  - "github.com"
+  - "objects.githubusercontent.com"
+  - "api.github.com"
+  - "registry.npmjs.org"
+  - "nodejs.org"
+  - "pypi.org"
+  - "files.pythonhosted.org"
+
+defaults:
+  dataset: "terminal-bench@2.0"
+
+  # Trials in flight at once. With n_concurrent_agents below, these overlap only
+  # in their setup / verify / teardown phases -- exactly one is ever generating.
+  #
+  # 2, not 3: one generating plus one staged is all it takes to hide setup
+  # behind the previous trial's generation. Any further trials just sit blocked
+  # on the agent semaphore holding a container open -- observed waiting 92
+  # minutes for its turn. That costs RAM and disk and buys nothing, because only
+  # one can ever generate. Raise this only in step with n_concurrent_agents.
+  n_concurrent: 2
+
+  # Hard cap on concurrent *agent* phases. Harbor gates this with a semaphore
+  # acquired on AGENT_START and released on AGENT_END, so a single-slot server
+  # sees one request stream no matter how many trials are open.
+  #
+  # This is the whole trick: on a single-slot server a meaningful slice of wall
+  # clock -- often around a tenth -- is non-LLM work (harness install per trial,
+  # plus image pulls and verifiers) during which the GPU sits idle. Pipelining
+  # hides that behind the previous trial's generation without changing anything
+  # the model sees. Measure your own share with `harness-bench throughput`.
+  #
+  # Leave at 1 for a single-slot self-hosted server. Raise BOTH numbers together
+  # only if the server actually has matching parallel slots (llama-server: -np;
+  # vLLM handles this natively) -- otherwise extra agents just queue, which is
+  # both slower and unfair to whichever harness makes more calls.
+  #
+  # Left unset, this defaults to the slot count the endpoint reports, or to the
+  # provider's default for hosted APIs, which have no local slot to contend for.
+  n_concurrent_agents: 1
+
+  n_attempts: 1
+
+  # Terminal-Bench budgets each task at 900-1800s, sized for frontier APIs.
+  # A trajectory typically spends 30k-150k output tokens, so the budget you need
+  # follows directly from your generation speed:
+  #
+  #   ~25 tok/s   (large dense model, one consumer GPU)  ->  16.0
+  #   ~50 tok/s                                          ->   8.0
+  #   ~140 tok/s  (small MoE, few active params)         ->   4.0
+  #   hosted frontier API                                ->   1.0
+  #
+  # Run `harness-bench probe --speed` to measure yours. It reports a floor:
+  # the arithmetic covers *generation* only, and the agent budget also has to
+  # absorb prompt processing on every turn -- which grows with the context --
+  # plus the wall clock of the commands the agent runs. Doubling its
+  # recommendation is a reasonable starting point.
+  #
+  # Err high. Over-budgeting costs wall clock on tasks the agent would have
+  # abandoned anyway; under-budgeting kills tasks mid-solve, and a timeout
+  # scores exactly like a wrong answer -- so the benchmark silently measures
+  # your hardware instead of the harness.
+  #
+  # 4.0 gives the 900s tasks 1h and the 1800s tasks 2h. This changes pass
+  # rates, so runs at different multipliers are NOT comparable -- the dashboard
+  # refuses to pair them. Check the `T` count in the matrix after a run: if
+  # nothing timed out, lower it and reclaim the tail.
+  agent_timeout_multiplier: 4.0
+
+  # Image pulls happen inside the environment-start budget, and a 21.6GB task
+  # image (mteb-retrieve) blew the 600s default outright -- the task was lost to
+  # EnvironmentStartTimeoutError rather than scored. Pre-pulling makes this
+  # mostly moot; this is the belt to that suspenders.
+  environment_build_timeout_multiplier: 4.0

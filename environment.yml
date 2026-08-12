@@ -1,0 +1,23 @@
+# conda env create -f environment.yml
+# conda activate harness-bench
+# pip install -e .
+#
+# A plain virtualenv works just as well -- this exists because conda is common
+# on machines that already have CUDA set up:
+#
+#   python -m venv .venv && source .venv/bin/activate && pip install -e .
+#
+# Dependencies themselves live in pyproject.toml, so there is one place to
+# change them. Harbor is pinned there: it is the measuring instrument, and an
+# upgrade can change agent defaults or reward handling underneath a running
+# experiment. Every run records the version it used, so bumping the pin is safe
+# as long as you re-run the comparisons you care about.
+name: harness-bench
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - pip
+  # Node is only needed for the dashboard test suite, not to run benchmarks.
+  # Uncomment if you intend to work on the dashboard.
+  # - nodejs>=20

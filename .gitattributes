@@ -1,0 +1,13 @@
+# Normalize to LF in the repository. Without this, a clone made on Windows
+# commits CRLF into run.sh, and the shell on Linux fails on the carriage return
+# with a "bad interpreter" error that points at nothing useful.
+* text=auto eol=lf
+
+# PowerShell is the exception: keep CRLF so the file reads correctly in editors
+# on the platform it is actually for.
+*.ps1 text eol=crlf
+
+# Never touched by line-ending normalization.
+*.png binary
+*.jpg binary
+*.gz  binary

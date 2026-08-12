@@ -1,0 +1,55 @@
+# ---------------------------------------------------------------------------
+# Secrets and machine-local configuration
+# ---------------------------------------------------------------------------
+# config.yaml holds your endpoint and may hold an API key. config.example.yaml
+# is the committed template. Never remove these three lines.
+config.yaml
+config.*.yaml
+!config.example.yaml
+.env
+.env.*
+*.pem
+*.key
+credentials.json
+
+# fingerprint -> label cache. Local to one machine: it records the weights you
+# have loaded, including their paths on your disk.
+bench/models.json
+
+# ---------------------------------------------------------------------------
+# Run output
+# ---------------------------------------------------------------------------
+# Harbor job output: large (per-trial container logs, trajectories, artifacts)
+# and regenerable by re-running the benchmark.
+runs/
+
+# The dashboard rewrites harnesses/registry.yaml when you edit defaults, and
+# keeps a .bak beside it. The backup is local state, never something to publish.
+*.yaml.bak
+
+# Exported dashboard snapshots. These inline run manifests, so treat them as
+# publishable only after you have looked at what is in them.
+*-snapshot.html
+
+# ---------------------------------------------------------------------------
+# Python
+# ---------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.ruff_cache/
+.pytest_cache/
+
+# ---------------------------------------------------------------------------
+# Editors, agent tooling and OS cruft
+# ---------------------------------------------------------------------------
+.omc/
+.claude/
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

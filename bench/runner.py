@@ -1,0 +1,897 @@
+"""Drive Harbor once per harness against the currently-served model.
+
+Everything harness-specific lives in harnesses/registry.yaml -- this module only
+knows how to turn a registry block plus a probed model into a `harbor run`
+invocation, and how to record what it did.
+
+Runs are strictly sequential. One llama-server backs every harness, so two
+overlapping runs would contend for the same slots and each would measure the
+other's queueing delay as if it were its own latency.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import platform
+import re
+import secrets
+import shutil
+import subprocess
+import sys
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+
+import yaml
+
+from bench import REGISTRY_PATH, ROOT
+from bench.config import DEFAULT_CONTEXT_WINDOW, Config, scrub
+from bench.probe import ModelIdentity, add_endpoint_args, config_from_args, describe, resolve
+from bench.supervisor import clear_run_marker, write_run_marker
+from bench.watchdog import HEALTH_FILENAME, EndpointWatchdog, health_url
+
+MANIFEST_NAME = "harness-bench.json"
+
+#: Exception types worth a second attempt. A dropped connection to the model
+#: endpoint reaches Harbor as a non-zero exit from the agent process, because
+#: that is how every harness reacts to losing its endpoint mid-turn.
+#:
+#: Nothing at retry time can tell that apart from a harness crashing on its own
+#: bug -- the distinction is only visible afterwards, in the log, which is where
+#: bench.collect draws it. So the list is kept narrow, the budget defaults to a
+#: single retry, and both are written into the manifest: a run that retried is
+#: not the same experiment as one that did not, and the dashboard has to be able
+#: to say so.
+RETRY_INCLUDE_DEFAULT = ["NonZeroAgentExitCodeError"]
+
+#: Environment asked for when diagnostics are on. Scoped rather than blanket
+#: `debug`: the connection pool is the layer that matters for a request that
+#: was never sent, and full trace output would bury the transcript it shares a
+#: log with.
+DEBUG_AGENT_ENV = {
+    "RUST_LOG": "info,reqwest=debug,hyper=debug,hyper_util=debug",
+    "RUST_BACKTRACE": "1",
+}
+
+
+SUBSET_DIR = ROOT / "bench" / "subsets"
+
+
+def load_registry(path: Path = REGISTRY_PATH) -> dict[str, Any]:
+    with path.open(encoding="utf-8") as handle:
+        return yaml.safe_load(handle)
+
+
+def load_subset(name: str) -> list[str]:
+    """Read a named task list from bench/subsets/<name>.txt."""
+    path = SUBSET_DIR / f"{name}.txt"
+    if not path.exists():
+        available = sorted(p.stem for p in SUBSET_DIR.glob("*.txt"))
+        raise SystemExit(
+            f"No subset '{name}' at {path}."
+            + (f" Available: {', '.join(available)}" if available else "")
+        )
+    tasks = [
+        line.strip()
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    if not tasks:
+        raise SystemExit(f"Subset '{name}' lists no tasks.")
+    return tasks
+
+
+def harbor_executable() -> str:
+    found = shutil.which("harbor")
+    if not found:
+        raise RuntimeError(
+            "`harbor` is not on PATH. Run through the project env, e.g.\n"
+            "  conda run --no-capture-output -n harness-bench python -m bench.runner ..."
+        )
+    return found
+
+
+def harbor_version() -> str:
+    try:
+        result = subprocess.run(
+            [harbor_executable(), "--version"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=60,
+            check=False,
+        )
+        return result.stdout.strip() or "unknown"
+    except (OSError, subprocess.SubprocessError):
+        return "unknown"
+
+
+def effective_context(model: ModelIdentity, config: Config) -> tuple[int, str]:
+    """The window every harness is told, and where the number came from.
+
+    Three sources, most authoritative first: what you configured, what the
+    server reported, and a conservative fallback for a server that will not
+    say. The source travels with the number because "128K, detected" and
+    "4K, because nothing knew" are not the same claim about a run, and only
+    one of them is worth comparing against another run.
+    """
+    configured = int(getattr(config.endpoint, "context_window", 0) or 0)
+    if configured > 0:
+        return configured, "configured"
+    if model.n_ctx:
+        return int(model.n_ctx), "detected"
+    return DEFAULT_CONTEXT_WINDOW, "fallback"
+
+
+
+#: What a harness with a reasoning knob is told when the endpoint can think.
+#: Harbor's own default for Codex, kept so that turning this into a probed
+#: value changes nothing for a server that was already working.
+DEFAULT_REASONING_EFFORT = "high"
+
+#: The spelling that means "do not think". Not the same as sending no effort at
+#: all: Codex emits a ``reasoning`` object either way, and only an explicit
+#: "none" is both accepted by a server that refuses thinking and recorded in
+#: the manifest as a deliberate choice. Measured against codex-cli 0.147.0.
+NO_REASONING_EFFORT = "none"
+
+#: Efforts some server has actually been measured to accept. Not a whitelist --
+#: an unrecognised value is still passed through, because a new server or a new
+#: harness release is free to add one and this rig's job is to measure that,
+#: not to veto it. But a typo fails every trial with the same bare non-zero
+#: exit code a refused effort produces, so it is worth saying out loud first.
+KNOWN_REASONING_EFFORTS = ("none", "minimal", "low", "medium", "high")
+
+
+def effective_reasoning_effort(
+    model: ModelIdentity, config: Config
+) -> tuple[str, str]:
+    """The reasoning effort every reasoning-capable harness is told, and why.
+
+    Same three sources as effective_context, most authoritative first: what you
+    configured, what the endpoint was measured to accept, and the harness
+    default when nothing could be learned.
+
+    The middle source is the point. An effort is not a preference here, it is
+    something a server can refuse outright -- Ollama answers 400 "does not
+    support thinking" for a model that cannot -- and Codex sends one on every
+    request whether or not the model can use it. Hard-coding "high" therefore
+    breaks every trial against such a server, with a bare non-zero exit code
+    that reads as a broken harness rather than a mismatched setting.
+
+    The source travels with the value for the same reason it does for the
+    context window: a thinking run and a non-thinking run are not the same
+    experiment, so a run has to say which one it was.
+    """
+    configured = (getattr(config.endpoint, "reasoning_effort", "") or "").strip()
+    if configured:
+        return configured, "configured"
+    if model.supports_reasoning is True:
+        return DEFAULT_REASONING_EFFORT, "probed"
+    if model.supports_reasoning is False:
+        return NO_REASONING_EFFORT, "probed"
+    return DEFAULT_REASONING_EFFORT, "fallback"
+
+
+def uses_placeholder(spec: Any, name: str) -> bool:
+    """Whether a harness spec asks for ``{name}`` anywhere in its values.
+
+    Lets the runner report a resolved setting only to the runs it can actually
+    affect, rather than announcing a reasoning effort ahead of a harness that
+    has no reasoning knob.
+    """
+    token = "{" + name + "}"
+    if isinstance(spec, str):
+        return token in spec
+    if isinstance(spec, dict):
+        return any(uses_placeholder(value, name) for value in spec.values())
+    if isinstance(spec, list):
+        return any(uses_placeholder(value, name) for value in spec)
+    return False
+
+
+def agent_max_tokens_for(window: int) -> int:
+    """Output ceiling for a given window. One definition, used everywhere."""
+    return max(4096, window // 8)
+
+
+def check_context_floor(
+    harness_id: str, spec: dict[str, Any], model: ModelIdentity, config: Config
+) -> None:
+    """Refuse a run a harness cannot start, before it starts.
+
+    Some harnesses will not run below a fixed window. hermes-agent is one: it
+    exits during initialisation under 64K, which Harbor records as a bare
+    NonZeroAgentExitCodeError -- indistinguishable from a crash, and repeated
+    once per task plus its retry. A 89-task run spends hours reproducing the
+    same refusal instead of reporting it once.
+
+    The floor is a property of the harness, so it lives beside it in the
+    catalog rather than being special-cased here.
+    """
+    floor = int(spec.get("min_context_window") or 0)
+    if floor <= 0:
+        return
+    window, source = effective_context(model, config)
+    if window >= floor:
+        return
+    raise SystemExit(
+        f"{harness_id} needs a context window of at least {floor:,} tokens, "
+        f"but this run would give it {window:,} ({source}).\n"
+        f"  The harness refuses to initialise below its floor, so every trial "
+        f"would fail identically.\n"
+        f"  Fix: serve a larger window and set endpoint.context_window to "
+        f"match it -- raising the number alone makes the server truncate "
+        f"silently.\n"
+        f"  Or run the other harnesses and leave {harness_id} out."
+    )
+
+
+#: A trailing API-version segment, e.g. the "/v1" in http://host:8002/v1.
+#:
+#: Which of the two forms a harness wants is not a style choice, it is a
+#: property of the client SDK, and the two families disagree:
+#:
+#:   * Anthropic's client owns the version segment. It posts to
+#:     <root>/v1/messages, so handing it a base URL that already ends in /v1
+#:     produces /v1/v1/messages. Measured against claude-cli 2.1.226 pointed at
+#:     a logging server, not inferred from the docs.
+#:   * OpenAI's clients do not. Codex posts to <base_url>/responses, so the
+#:     same URL must keep its /v1. Measured the same way, codex-cli 0.147.0.
+#:
+#: Both are therefore correct and neither can be the single value of
+#: {base_url}. Hence a second placeholder rather than a per-harness fixup: the
+#: distinction belongs to the SDK, so every Anthropic-shaped harness added
+#: later wants the same thing.
+_VERSION_SUFFIX = re.compile(r"/+v\d+/*$")
+
+
+def base_url_root(base_url: str) -> str:
+    """`base_url` with any trailing API-version segment removed.
+
+    Idempotent, and a no-op for a URL that has none -- an endpoint served at a
+    bare host:port stays exactly as configured.
+    """
+    stripped = (base_url or "").strip()
+    return _VERSION_SUFFIX.sub("", stripped) or stripped
+
+
+def _substitutions(model: ModelIdentity, config: Config) -> dict[str, str]:
+    window, _ = effective_context(model, config)
+    max_tokens = agent_max_tokens_for(window)
+    return {
+        "model_id": model.served_id,
+        "base_url": model.base_url,
+        # For harnesses whose SDK appends "/v1" itself -- see base_url_root.
+        "base_url_root": base_url_root(model.base_url),
+        "host": model.host,
+        "n_ctx": str(window),
+        "max_tokens": str(max_tokens),
+        # Only harnesses that actually send a reasoning effort reference this;
+        # see effective_reasoning_effort for why it is not a constant.
+        "reasoning_effort": effective_reasoning_effort(model, config)[0],
+        "label": model.label,
+        # Harnesses talking to a hosted provider need the credential. It is
+        # substituted into the command here and scrubbed back out of anything
+        # recorded or printed -- see write_manifest and run_one.
+        #
+        # "local" when there is no key: a self-hosted server ignores the value,
+        # but several harnesses treat an *empty* key as "no credentials" and
+        # abandon the request before building it, which surfaces as a confusing
+        # auth error against a server that never wanted auth.
+        "api_key": config.endpoint.resolve_api_key() or "local",
+    }
+
+
+def _fill(value: Any, subs: dict[str, str]) -> Any:
+    if isinstance(value, str):
+        return value.format(**subs)
+    if isinstance(value, dict):
+        return {key: _fill(item, subs) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_fill(item, subs) for item in value]
+    return value
+
+
+def new_batch_id(stamp: str) -> str:
+    """Identity for one sweep -- one `bench` invocation across its harnesses.
+
+    Each harness writes its own job directory, so without this the only thing
+    tying them together is that they happen to share a subset name. That is not
+    the same fact: re-running a subset produces a second sweep the first cannot
+    be told apart from, and "three runs" then means three harnesses or three
+    sweeps depending on who is counting.
+    """
+    return f"{stamp}-{secrets.token_hex(3)}"
+
+
+def job_name(harness: str, model: ModelIdentity, stamp: str) -> str:
+    return f"{harness}__{model.slug}__{stamp}"
+
+
+def build_command(
+    harness_id: str,
+    spec: dict[str, Any],
+    model: ModelIdentity,
+    registry: dict[str, Any],
+    config: Config,
+    *,
+    jobs_dir: Path,
+    name: str,
+    dataset: str,
+    n_concurrent: int,
+    n_attempts: int,
+    n_tasks: int | None,
+    include_tasks: list[str] | None,
+    extra_args: list[str] | None,
+    allow_hosts: bool,
+    agent_timeout_multiplier: float,
+    n_concurrent_agents: int | None,
+    env_build_timeout_multiplier: float | None,
+    max_retries: int,
+    retry_include: list[str] | None,
+    debug_capture: bool = False,
+) -> tuple[list[str], dict[str, str]]:
+    """Return (argv, host_env_overrides) for one harness run."""
+    check_context_floor(harness_id, spec, model, config)
+    subs = _substitutions(model, config)
+    spec = _fill(spec, subs)
+
+    argv = [
+        harbor_executable(),
+        "run",
+        "--dataset",
+        dataset,
+        "--agent",
+        spec["agent"],
+        "--model",
+        spec["model_ref"],
+        "--jobs-dir",
+        str(jobs_dir),
+        "--job-name",
+        name,
+        "--n-concurrent",
+        str(n_concurrent),
+        "--n-attempts",
+        str(n_attempts),
+        "--yes",
+    ]
+
+    # Terminal-Bench tasks carry their own agent budget (900-1800s in this
+    # dataset). Those were set for frontier APIs; a large local model on one slot
+    # can spend the whole budget and time out with the task half-finished, which
+    # scores identically to being wrong. Scaling the budget measures capability
+    # instead of throughput -- at the cost of leaderboard comparability, so the
+    # multiplier is recorded per run and surfaced in the dashboard.
+    if agent_timeout_multiplier != 1.0:
+        argv += ["--agent-timeout-multiplier", str(agent_timeout_multiplier)]
+
+    # Overlap setup/verify/teardown across trials while keeping the LLM phase
+    # strictly serialized. Harbor rejects a value above --n-concurrent.
+    if n_concurrent_agents:
+        argv += [
+            "--n-concurrent-agents",
+            str(min(n_concurrent_agents, n_concurrent)),
+        ]
+    if env_build_timeout_multiplier:
+        argv += [
+            "--environment-build-timeout-multiplier",
+            str(env_build_timeout_multiplier),
+        ]
+
+    # A dropped connection to the endpoint should cost wall clock, not a data
+    # point. Retries are restricted to the exception types an infrastructure
+    # failure actually surfaces as -- retrying everything would quietly hand a
+    # harness a second attempt at its own bugs, which is a different experiment.
+    # The budget is recorded per run so two runs are never silently compared
+    # across different numbers of attempts.
+    if max_retries:
+        argv += ["--max-retries", str(max_retries)]
+        for exception_type in retry_include or []:
+            argv += ["--retry-include", exception_type]
+
+    if n_tasks is not None:
+        argv += ["--n-tasks", str(n_tasks)]
+    for task in include_tasks or []:
+        argv += ["--include-task-name", task]
+
+    # Terminal-Bench 2 runs its agent phase with a public network policy, so an
+    # allowlist is not merely unnecessary -- Harbor warns that it is ignored.
+    # Kept behind a flag for datasets that do restrict egress, where both
+    # harnesses would otherwise fail to install themselves.
+    if allow_hosts:
+        hosts = [model.host, *(_fill(registry.get("allow_agent_hosts") or [], subs))]
+        for host in dict.fromkeys(hosts):
+            argv += ["--allow-agent-host", host]
+
+    # Best-effort verbosity. A harness that failed to *send* a request logs
+    # only that sending failed -- Rust's reqwest, which several of these use,
+    # prints its top-level message and discards the source, so refused, reset
+    # and timed-out are indistinguishable afterwards. These ask its logging
+    # layer for the connection detail instead. Harnesses that are not Rust, or
+    # do not read these, simply ignore them; nothing here is a guarantee, which
+    # is why the watchdog is the part that does not depend on cooperation.
+    if debug_capture:
+        for key, value in DEBUG_AGENT_ENV.items():
+            argv += ["--ae", f"{key}={value}"]
+
+    for key, value in (spec.get("agent_env") or {}).items():
+        argv += ["--ae", f"{key}={value}"]
+    for key, value in (spec.get("agent_kwargs") or {}).items():
+        argv += ["--ak", f"{key}={value}"]
+    argv += list(extra_args or [])
+
+    return argv, dict(spec.get("host_env") or {})
+
+
+def write_manifest(
+    job_dir: Path,
+    *,
+    harness_id: str,
+    spec: dict[str, Any],
+    model: ModelIdentity,
+    config: Config,
+    argv: list[str],
+    dataset: str,
+    n_concurrent: int,
+    n_concurrent_agents: int | None,
+    n_attempts: int,
+    n_tasks: int | None,
+    include_tasks: list[str] | None,
+    agent_timeout_multiplier: float,
+    subset: str | None,
+    started_at: str,
+    batch_id: str = "",
+    context_window: int = 0,
+    context_source: str = "detected",
+    max_retries: int = 0,
+    retry_include: list[str] | None = None,
+    debug_capture: bool = False,
+) -> None:
+    job_dir.mkdir(parents=True, exist_ok=True)
+    # Derived from the same inputs as the command itself rather than passed in,
+    # so the manifest cannot drift from what the harness was actually told.
+    reasoning_effort, reasoning_source = effective_reasoning_effort(model, config)
+    manifest = {
+        "schema": 1,
+        "harness": harness_id,
+        "harness_label": spec.get("label", harness_id),
+        # Which sweep this harness belonged to. Absent on runs recorded before
+        # sweeps were identified; the dashboard falls back to grouping those by
+        # subset, which is what it did for all of them.
+        "batch_id": batch_id or None,
+        "harness_vendor": spec.get("vendor"),
+        "harness_repo": spec.get("repo"),
+        "agent_ref": spec.get("agent"),
+        "model": model.to_dict(),
+        # What the harnesses were told about the model, resolved from the probe.
+        # Recorded because a run is only comparable to another that used the
+        # same window: it decides when a harness compresses or truncates, and
+        # nothing else in the run data would reveal a mismatch.
+        "context_window": context_window,
+        "context_window_source": context_source,
+        "agent_max_tokens": agent_max_tokens_for(context_window),
+        # Recorded for the same reason as the window, and it is the stronger
+        # case: a harness that reasoned and one that did not are not two
+        # measurements of the same thing. Only some harnesses read it, but the
+        # run either offered thinking or it did not.
+        "reasoning_effort": reasoning_effort,
+        "reasoning_effort_source": reasoning_source,
+        "dataset": dataset,
+        "n_concurrent": n_concurrent,
+        "n_concurrent_agents": n_concurrent_agents,
+        "n_attempts": n_attempts,
+        # How many extra attempts a trial got, and for which failures. A run
+        # that retried is not the same experiment as one that did not, so this
+        # is recorded rather than left implicit in the command line.
+        "max_retries": max_retries,
+        "retry_include": retry_include or None,
+        # Whether endpoint sampling was running. Absent or false means nobody
+        # may claim the endpoint was up *or* down for this run -- there is no
+        # evidence either way, and that is worth recording explicitly.
+        "debug_capture": debug_capture,
+        # A subset run is not comparable to a full-dataset run, and the two look
+        # identical once they are rows in the same table. Record the restriction
+        # so the dashboard can say so instead of quietly ranking them together.
+        "n_tasks_requested": n_tasks,
+        "include_tasks": include_tasks or None,
+        "agent_timeout_multiplier": agent_timeout_multiplier,
+        "subset": subset,
+        "is_partial": bool(n_tasks is not None or include_tasks),
+        "harbor_version": harbor_version(),
+        "orchestrator": {
+            "platform": platform.platform(),
+            "python": platform.python_version(),
+        },
+        # The command, with credentials removed. host_env is deliberately absent
+        # entirely, and any API key substituted into an --ak/--ae value is
+        # scrubbed here: a manifest is what the dashboard reads and what `export`
+        # inlines into a shareable snapshot, so it must be safe to publish.
+        "command": [scrub(arg, config) for arg in argv],
+        "started_at": started_at,
+    }
+    # Opt-in, because manifests get shared and a hostname identifies a machine.
+    if config.record_hostname:
+        manifest["orchestrator"]["hostname"] = platform.node()
+    (job_dir / MANIFEST_NAME).write_text(
+        json.dumps(manifest, indent=2), encoding="utf-8"
+    )
+
+
+def run_one(
+    harness_id: str,
+    registry: dict[str, Any],
+    model: ModelIdentity,
+    config: Config,
+    *,
+    jobs_dir: Path,
+    dataset: str,
+    n_concurrent: int,
+    n_concurrent_agents: int | None,
+    env_build_timeout_multiplier: float | None,
+    n_attempts: int,
+    n_tasks: int | None,
+    include_tasks: list[str] | None,
+    extra_args: list[str] | None,
+    allow_hosts: bool,
+    agent_timeout_multiplier: float,
+    subset: str | None,
+    dry_run: bool,
+    batch_id: str = "",
+    max_retries: int = 0,
+    retry_include: list[str] | None = None,
+    debug_capture: bool = False,
+) -> int:
+    spec = registry["harnesses"][harness_id]
+    run_window, run_window_source = effective_context(model, config)
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    name = job_name(harness_id, model, stamp)
+    job_dir = jobs_dir / name
+
+    argv, host_env = build_command(
+        harness_id,
+        spec,
+        model,
+        registry,
+        config,
+        jobs_dir=jobs_dir,
+        name=name,
+        dataset=dataset,
+        n_concurrent=n_concurrent,
+        n_attempts=n_attempts,
+        n_tasks=n_tasks,
+        include_tasks=include_tasks,
+        extra_args=extra_args,
+        allow_hosts=allow_hosts,
+        agent_timeout_multiplier=agent_timeout_multiplier,
+        n_concurrent_agents=n_concurrent_agents,
+        env_build_timeout_multiplier=env_build_timeout_multiplier,
+        max_retries=max_retries,
+        retry_include=retry_include,
+        debug_capture=debug_capture,
+    )
+
+    env = os.environ.copy()
+    env.update(host_env)
+    # Custom agents live in harnesses/, importable only if the project root is
+    # on the path of the harbor process.
+    existing = env.get("PYTHONPATH")
+    env["PYTHONPATH"] = f"{ROOT}{os.pathsep}{existing}" if existing else str(ROOT)
+
+    # Read every file as UTF-8 regardless of the machine's locale.
+    #
+    # Agent transcripts contain whatever the model emitted, and Path.read_text()
+    # with no encoding= uses the *locale* encoding -- cp1252 on a stock Windows
+    # install. Only five byte values (0x81 0x8d 0x8f 0x90 0x9d) are undefined
+    # there, so the vast majority of non-ASCII output decodes to mojibake in
+    # silence and the rest raises UnicodeDecodeError. Harbor reads the hermes
+    # session that way, after the agent has already done its work, so a model
+    # that wandered into CJK once cost the trial during token accounting -- and
+    # scored as an error rather than as whatever the agent actually achieved.
+    #
+    # Set on the harbor process rather than patched in one adapter: the same
+    # unqualified read appears throughout an installed dependency, and which
+    # ones fire depends on what the model typed. UTF-8 mode makes the whole
+    # subprocess locale-independent, which is the property we actually want.
+    # No effect where the locale is already UTF-8, i.e. Linux and macOS.
+    env["PYTHONUTF8"] = "1"
+
+    print(f"\n{'=' * 78}")
+    print(f"  {spec.get('label', harness_id)}  x  {model.label}")
+    print(f"  job: {name}")
+    print(f"{'=' * 78}")
+    # Scrubbed: this line gets pasted into issues and screen shares.
+    printable = " ".join(
+        arg if " " not in arg else f'"{arg}"' for arg in (scrub(a, config) for a in argv)
+    )
+    print(f"  $ {printable}\n")
+
+    if dry_run:
+        return 0
+
+    write_manifest(
+        job_dir,
+        harness_id=harness_id,
+        spec=spec,
+        model=model,
+        config=config,
+        argv=argv,
+        dataset=dataset,
+        n_concurrent=n_concurrent,
+        n_concurrent_agents=n_concurrent_agents,
+        n_attempts=n_attempts,
+        n_tasks=n_tasks,
+        include_tasks=include_tasks,
+        agent_timeout_multiplier=agent_timeout_multiplier,
+        subset=subset,
+        started_at=datetime.now(UTC).isoformat(),
+        batch_id=batch_id,
+        context_window=run_window,
+        context_source=run_window_source,
+        max_retries=max_retries,
+        retry_include=retry_include,
+        debug_capture=debug_capture,
+    )
+
+    # Ground truth for "was the endpoint actually up?". Without it, a transport
+    # failure inside a harness is unattributable -- and the tempting answer,
+    # blaming the endpoint, is the one that hides a bug in our own code.
+    watchdog = None
+    if debug_capture:
+        watchdog = EndpointWatchdog(
+            health_url(model.base_url),
+            job_dir / HEALTH_FILENAME,
+            api_key=config.endpoint.resolve_api_key(),
+        )
+        watchdog.start()
+        print(f"  diagnostics on: sampling the endpoint into {HEALTH_FILENAME}")
+
+    try:
+        result = subprocess.run(argv, env=env, cwd=str(ROOT), check=False)
+    finally:
+        if watchdog is not None:
+            watchdog.stop()
+    if result.returncode != 0:
+        print(f"\n  [!] {harness_id} exited {result.returncode}", file=sys.stderr)
+    return result.returncode
+
+
+def main(argv: list[str] | None = None) -> int:
+    registry = load_registry()
+    defaults = registry.get("defaults") or {}
+    known = list(registry["harnesses"])
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--harness",
+        action="append",
+        choices=known,
+        help=f"Harness to run; repeatable. Default: all ({', '.join(known)})",
+    )
+    add_endpoint_args(parser)
+    parser.add_argument("--dataset", default=defaults.get("dataset"))
+    parser.add_argument(
+        "--n-concurrent",
+        type=int,
+        default=defaults.get("n_concurrent", 1),
+        help="Trials in flight at once. Their setup/verify phases overlap; the "
+        "agent phase is capped separately by --n-concurrent-agents.",
+    )
+    parser.add_argument(
+        "--n-concurrent-agents",
+        type=int,
+        default=defaults.get("n_concurrent_agents"),
+        help="Cap on concurrent agent (LLM) phases. Keep at the endpoint's slot "
+        "count so trials never queue on the model server.",
+    )
+    parser.add_argument(
+        "--env-build-timeout-multiplier",
+        type=float,
+        default=defaults.get("environment_build_timeout_multiplier"),
+        help="Scale the environment start/build budget. Large task images can "
+        "exceed the 600s default and lose the task outright.",
+    )
+    parser.add_argument("--n-attempts", type=int, default=defaults.get("n_attempts", 1))
+    parser.add_argument(
+        "--max-retries",
+        type=int,
+        default=defaults.get("max_retries", 1),
+        help="Extra attempts for a trial that died on an infrastructure failure "
+        "(see --retry-include). 0 disables retrying.",
+    )
+    parser.add_argument(
+        "--retry-include",
+        action="append",
+        default=None,
+        help="Exception type to retry on; repeatable. Defaults to the types a "
+        "dropped endpoint connection surfaces as.",
+    )
+    parser.add_argument(
+        "--n-tasks", type=int, default=None, help="Smoke-test with N tasks"
+    )
+    parser.add_argument(
+        "--task", action="append", default=None, help="Run only this task; repeatable"
+    )
+    parser.add_argument(
+        "--subset",
+        default=None,
+        help="Named task list from bench/subsets/<name>.txt. Every harness runs "
+        "the identical set, which is what keeps the comparison valid.",
+    )
+    parser.add_argument(
+        "--agent-timeout-multiplier",
+        type=float,
+        default=defaults.get("agent_timeout_multiplier", 1.0),
+        help="Scale each task's agent time budget. Terminal-Bench budgets assume "
+        "frontier-API speed; a large local model often needs 2-4x. 1.0 keeps "
+        "results leaderboard-comparable.",
+    )
+    parser.add_argument(
+        "--jobs-dir",
+        type=Path,
+        default=None,
+        help="Where Harbor job directories are written. Default: runs_dir from config.",
+    )
+    parser.add_argument(
+        "--allow-hosts",
+        action="store_true",
+        help="Send the registry's egress allowlist. Only needed for datasets "
+        "whose agent phase restricts network access.",
+    )
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--debug-capture",
+        action="store_true",
+        help="Sample the endpoint for the life of the run, and ask harnesses "
+        "for connection-level logs where they support it, so a transport "
+        "failure can be attributed afterwards instead of guessed at.",
+    )
+    parser.add_argument("--no-input", action="store_true")
+    parser.add_argument(
+        "harbor_args",
+        nargs="*",
+        help="Extra args forwarded to `harbor run` verbatim (put after --)",
+    )
+    args = parser.parse_args(argv)
+
+    config = config_from_args(args)
+    jobs_dir = args.jobs_dir or config.resolved_runs_dir()
+
+    model = resolve(config.endpoint, interactive=not args.no_input)
+    print(f"\nModel under test: {model.label}")
+    print(describe(model))
+
+    n_concurrent = args.n_concurrent
+    # The agent cap, not the trial cap, is what must match the server. Default it
+    # to the endpoint's slot count so the LLM never sees queued requests, however
+    # many trials are open. A hosted provider reports no slots, so fall back to
+    # the provider's own default rather than needlessly serializing.
+    n_concurrent_agents = (
+        args.n_concurrent_agents
+        or model.total_slots
+        or config.endpoint.resolved_provider().default_agent_concurrency
+    )
+    n_concurrent_agents = min(n_concurrent_agents, n_concurrent)
+    window, window_source = effective_context(model, config)
+    print(
+        f"\n  context window: {window:,} ({window_source}), "
+        f"max {agent_max_tokens_for(window):,} output tokens per response"
+    )
+    if window_source == "fallback":
+        print(
+            "  [!] The server did not report a context window and none is "
+            "configured, so a conservative default is in use. Set it on the "
+            "Setup tab (or endpoint.context_window) to match your server -- "
+            "overshooting truncates silently and scores as a wrong answer."
+        )
+
+    slots = (
+        f"endpoint reports {model.total_slots} slot(s)"
+        if model.total_slots is not None
+        else "hosted endpoint, no local slots"
+    )
+    print(
+        f"\n  {n_concurrent} trials in flight, {n_concurrent_agents} generating at once "
+        f"({slots})."
+    )
+    # Only meaningful for a server with a fixed slot count. Overshooting it means
+    # requests queue at the server, which inflates per-request latency and falls
+    # hardest on whichever harness makes more calls -- the variable under test.
+    if model.total_slots is not None and n_concurrent_agents > model.total_slots:
+        print(
+            "  [!] More concurrent agents than server slots: requests will queue "
+            "and per-request latency will rise. Restart the server with matching "
+            "parallel slots first (llama-server: -np)."
+        )
+
+    include_tasks = list(args.task or [])
+    if args.subset:
+        subset_tasks = load_subset(args.subset)
+        include_tasks = subset_tasks + [t for t in include_tasks if t not in subset_tasks]
+        print(f"\n  subset '{args.subset}': {len(subset_tasks)} tasks")
+
+    harnesses = args.harness or known
+
+    # Reported once the selection is known, because only some harnesses send an
+    # effort at all. The fallback deserves a warning even though it is the old
+    # behaviour: it is safe exactly where it is not needed. On a server that
+    # accepts an effort, falling back to the default is what would have
+    # happened anyway; on one that refuses, the same fallback answers 400 on
+    # the first request of every trial and burns the whole run.
+    if any(
+        uses_placeholder(registry["harnesses"].get(harness_id) or {}, "reasoning_effort")
+        for harness_id in harnesses
+    ):
+        effort, effort_source = effective_reasoning_effort(model, config)
+        print(f"\n  reasoning effort: {effort} ({effort_source})")
+        if effort_source == "fallback":
+            print(
+                "  [!] The endpoint could not be asked whether it accepts a "
+                "reasoning effort, so the harness default is in use -- "
+                "unchanged from before this was probed. If the server refuses "
+                "one, every trial dies at its first request with a bare "
+                "non-zero exit code and no tokens. Set endpoint.reasoning_"
+                "effort=none if that happens."
+            )
+        elif effort not in KNOWN_REASONING_EFFORTS:
+            print(
+                f"  [!] {effort!r} is not an effort any server here has been "
+                "measured to accept. Passing it through as configured -- if it "
+                "is rejected, every trial fails at its first request."
+            )
+
+    # One id for this whole invocation, shared by every harness it runs, so a
+    # sweep can be recognised as one thing afterwards rather than inferred from
+    # the subset name -- which stops being a sweep the second time you use it.
+    batch_id = new_batch_id(datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ"))
+    failures = 0
+
+    # Claim this machine's Harbor containers for the duration, so anything
+    # looking at them from another process -- a dashboard open beside this
+    # terminal -- can tell a live trial from a leftover. A dry run starts no
+    # containers and must not claim any. Cleared in `finally` so an ordinary
+    # Ctrl-C leaves nothing behind; a hard kill is covered by the liveness
+    # check on the marker rather than by trusting this to run.
+    marker_dir = jobs_dir if not args.dry_run else None
+    if marker_dir:
+        write_run_marker(marker_dir, harnesses)
+    try:
+        for harness_id in harnesses:
+            failures += bool(
+                run_one(
+                    harness_id,
+                    registry,
+                    model,
+                    config,
+                    jobs_dir=jobs_dir,
+                    dataset=args.dataset,
+                    n_concurrent=n_concurrent,
+                    n_concurrent_agents=n_concurrent_agents,
+                    env_build_timeout_multiplier=args.env_build_timeout_multiplier,
+                    n_attempts=args.n_attempts,
+                    debug_capture=args.debug_capture,
+                    max_retries=args.max_retries,
+                    retry_include=args.retry_include or RETRY_INCLUDE_DEFAULT,
+                    n_tasks=args.n_tasks,
+                    include_tasks=include_tasks or None,
+                    extra_args=args.harbor_args,
+                    allow_hosts=args.allow_hosts,
+                    agent_timeout_multiplier=args.agent_timeout_multiplier,
+                    subset=args.subset,
+                    dry_run=args.dry_run,
+                    batch_id=batch_id,
+                )
+            )
+    finally:
+        if marker_dir:
+            clear_run_marker(marker_dir)
+
+    print(f"\nDone. {len(harnesses) - failures}/{len(harnesses)} harness runs succeeded.")
+    return 1 if failures else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

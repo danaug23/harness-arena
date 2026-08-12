@@ -1,0 +1,3648 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>harness-bench // terminal-bench harness matrix</title>
+<style>
+/* ---------------------------------------------------------------------------
+   Design tokens.
+
+   Categorical slots are the validated dark-mode order (validate_palette.js,
+   surface #080b0f: lightness band, chroma floor, adjacent CVD dE 8.4, normal
+   vision dE 19.3, contrast -- all PASS). Do not reorder: the ordering IS the
+   colorblind-safety mechanism.
+
+   Status slots are the fixed status palette. They deliberately fail the
+   categorical checks (deutan good-vs-critical dE 4.1), which is why every
+   status mark on this page also carries a glyph and a text label.
+
+   Typeface is the one parameter substituted from the reference: this is a
+   terminal-themed surface, so the "system face" here is monospace.
+--------------------------------------------------------------------------- */
+:root {
+  color-scheme: dark;
+
+  --plane:        #05070a;
+  --surface:      #080b0f;
+  --surface-2:    #0c1116;
+  --surface-3:    #111820;
+
+  --ink:          #e8f5ee;
+  --ink-2:        #9fb5a9;
+  --ink-muted:    #66796f;
+
+  /* Matrix phosphor. Chrome only -- headings, rules, borders. Never a data
+     mark, so it cannot be mistaken for a series or a status. */
+  --phosphor:     #00ff41;
+  --phosphor-dim: #22cc55;
+
+  --grid:         rgba(0, 255, 65, 0.09);
+  --rule:         rgba(0, 255, 65, 0.17);
+  --baseline:     rgba(0, 255, 65, 0.30);
+  --hairline:     rgba(232, 245, 238, 0.10);
+
+  --s1: #3987e5;  --s2: #d95926;  --s3: #199e70;  --s4: #c98500;
+  --s5: #d55181;  --s6: #008300;  --s7: #9085e9;  --s8: #e66767;
+
+  --good:     #0ca30c;
+  --warning:  #fab219;
+  --serious:  #ec835a;
+  --critical: #d03b3b;
+
+  --mono: ui-monospace, "JetBrains Mono", "Cascadia Code", "SF Mono", Menlo,
+          Consolas, "DejaVu Sans Mono", monospace;
+
+  --gap: 2px;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--plane);
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+body::before {
+  /* Scanlines. Fixed, non-interactive, and faint enough to stay under data. */
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 9;
+  background: repeating-linear-gradient(
+    to bottom,
+    rgba(0, 255, 65, 0.020) 0px,
+    rgba(0, 255, 65, 0.020) 1px,
+    transparent 1px,
+    transparent 3px
+  );
+}
+
+a { color: var(--phosphor-dim); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* ---------------------------- page shell --------------------------------
+   The whole dashboard is one viewport-height flex column: fixed header, fixed
+   filter strip, and a grid that consumes the rest. Panels scroll *internally*
+   rather than the page scrolling, so nothing important is ever below the fold.
+   Below 1180px this unwinds into the ordinary stacked document.            */
+
+html, body { height: 100%; }
+body { display: flex; flex-direction: column; overflow: hidden; }
+
+.wrap {
+  flex: 1;
+  min-height: 0;                 /* lets the grid shrink instead of overflowing */
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-width: 1800px;
+  width: 100%;
+  margin: 0 auto;
+  padding: 10px 16px 12px;
+}
+
+/* ------------------------------- header --------------------------------- */
+
+header {
+  position: relative;
+  flex: none;
+  border-bottom: 1px solid var(--rule);
+  background: var(--surface);
+}
+.head-inner {
+  position: relative;
+  z-index: 1;
+  max-width: 1800px;
+  margin: 0 auto;
+  padding: 9px 16px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 18px;
+  justify-content: space-between;
+}
+.brand { display: flex; align-items: baseline; gap: 14px; min-width: 0; }
+h1 {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--phosphor);
+  text-shadow: 0 0 16px rgba(0, 255, 65, 0.4);
+  white-space: nowrap;
+}
+.tagline {
+  margin: 0;
+  color: var(--ink-muted);
+  font-size: 11.5px;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.live {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  padding: 6px 13px;
+  border: 1px solid var(--rule);
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--ink-2);
+  font-size: 12px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ink-muted); }
+.live.on .dot { background: var(--good); box-shadow: 0 0 10px var(--good); animation: pulse 1.6s ease-in-out infinite; }
+.live.on { color: var(--ink); border-color: rgba(12, 163, 12, 0.45); }
+@keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.35; } }
+
+/* ------------------------------- filters -------------------------------- */
+/* One filter row above everything it scopes; every panel re-renders together. */
+
+/* The filter block sits *inside* the grid, in the first column above the feed,
+   so it is as wide as one panel rather than the whole page. That is the whole
+   point of it: as a full-width strip it took a band of height off the top of
+   every column, and the two panels that most need height -- pass rate and the
+   task matrix -- were the ones paying for it. Here they start at the very top
+   and the strip costs only the feed's column.
+
+   Which in turn is why the controls stack rather than sitting on one line:
+   there is no longer a page's width to spread across. */
+.filters {
+  grid-area: var(--area, head);
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 9px;
+  padding: 8px 12px;
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  background: var(--surface);
+  overflow: auto;
+}
+.filter-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 14px; }
+.filters .spacer { flex: 1 1 auto; }
+/* The model name is long and the column is narrow, so let the control take the
+   width it has rather than pushing the row wider than the panel. */
+.filters select#model-select { width: 100%; min-width: 0; }
+.filters .filter-group { min-width: 0; }
+.filter-group { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+.filter-label {
+  color: var(--ink-muted);
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+select, button.ghost {
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--ink);
+  background: var(--surface-3);
+  border: 1px solid var(--hairline);
+  border-radius: 4px;
+  padding: 6px 10px;
+  cursor: pointer;
+}
+select:focus-visible, button:focus-visible, .chip:focus-visible {
+  outline: 2px solid var(--phosphor-dim);
+  outline-offset: 2px;
+}
+.picker { position: relative; }
+.picker-menu {
+  position: absolute; top: calc(100% + 6px); left: 0; z-index: 40;
+  min-width: 320px; max-height: 420px; overflow: auto;
+  padding: 8px;
+  background: var(--surface); border: 1px solid var(--rule); border-radius: 8px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+}
+.picker-menu[hidden] { display: none; }
+.picker-actions { display: flex; gap: 8px; padding: 2px 4px 8px; }
+.pick-group + .pick-group { margin-top: 8px; border-top: 1px solid var(--hairline); padding-top: 8px; }
+.pick-head, .pick-row {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  padding: 5px 6px; border: 0; border-radius: 5px;
+  background: none; color: var(--ink-2); font: inherit; font-size: 11.5px;
+  text-align: left; cursor: pointer;
+}
+.pick-head { color: var(--ink); font-weight: 600; text-transform: lowercase; }
+.pick-head:hover, .pick-row:hover { background: var(--surface-3); }
+.pick-when { font-variant-numeric: tabular-nums; color: var(--ink-muted); min-width: 96px; }
+.pick-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pick-box {
+  flex: none; width: 12px; height: 12px; border-radius: 3px;
+  border: 1px solid var(--ink-muted);
+}
+.pick-box.on   { background: var(--good); border-color: var(--good); }
+/* Partly selected: unmistakably not the same as on or off at a glance. */
+.pick-box.some { background: linear-gradient(135deg, var(--good) 50%, transparent 50%); }
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  min-height: 24px;
+  border: 1px solid var(--hairline);
+  border-radius: 999px;
+  background: var(--surface-3);
+  color: var(--ink-2);
+  font-size: 12.5px;
+  cursor: pointer;
+  user-select: none;
+}
+.chip[aria-pressed="true"] { color: var(--ink); border-color: var(--rule); background: var(--surface-2); }
+.chip[aria-pressed="false"] { opacity: 0.44; }
+.swatch { width: 10px; height: 10px; border-radius: 2px; flex: none; }
+
+/* ------------------------------ expanded ---------------------------------
+   Six panels on one screen means every one of them is small, and the two that
+   hold the most -- the task matrix at 89 rows and the run log -- are the ones
+   that suffer. This gives any panel the whole window on demand, without
+   changing what it is: the expanded copy is the same rendered panel, so it
+   keeps updating on the five-second poll while it is open.               */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.72);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2vh 2vw;
+  z-index: 50;
+}
+.modal-backdrop > .panel {
+  width: 96vw;
+  height: 96vh;
+  max-width: none;
+  /* The grid places panels by area; this one is out of the grid entirely. */
+  grid-area: auto;
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.6);
+  border-color: var(--rule);
+}
+/* The body is the part that gains: it takes every pixel the window can spare,
+   and scrolls when the content still exceeds it. `height: auto` overrides the
+   narrow-viewport rule that pins the feed body to 55vh -- in here the window is
+   the only limit. */
+.modal-backdrop > .panel > .panel-body {
+  flex: 1 1 auto; max-height: none; height: auto; overflow: auto;
+}
+/* The feed brings its own scroller (`.feed`), and it is the one the
+   stick-to-newest logic drives. A second scroller on the body would leave that
+   logic moving an element the reader is not looking through. */
+.modal-backdrop > .panel.feed-panel > .panel-body { overflow: hidden; }
+.modal-backdrop .panel-expand { display: none; }
+.modal-close {
+  font-family: var(--mono);
+  font-size: 13px;
+  line-height: 1;
+  color: var(--ink-2);
+  background: var(--surface-3);
+  border: 1px solid var(--hairline);
+  border-radius: 3px;
+  padding: 4px 9px;
+  cursor: pointer;
+}
+.modal-close:hover { color: var(--ink); border-color: var(--rule); }
+.panel-expand { padding: 3px 7px; line-height: 1; }
+
+/* A filter that hides data has to look switched on, and a chip could not do
+   that job: its only "on" signal was looking *less* dim than its "off" state,
+   so an active filter read as an ordinary button and a run vanished with
+   nothing on screen saying why. This one states it four ways -- a filled box,
+   a check glyph, the label, and a count of what is being hidden -- because the
+   failure it caused was silent, and because colour alone is not a signal
+   everyone receives. */
+.check {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  min-height: 24px;
+  border: 1px solid var(--hairline);
+  border-radius: 999px;
+  background: var(--surface-3);
+  color: var(--ink-2);
+  font-size: 12.5px;
+  cursor: pointer;
+  user-select: none;
+}
+.check input {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 13px;
+  height: 13px;
+  margin: 0;
+  flex: none;
+  border: 1px solid var(--ink-muted);
+  border-radius: 3px;
+  background: var(--surface);
+  display: grid;
+  place-content: center;
+  cursor: pointer;
+}
+/* Phosphor is chrome here, not a data mark, so it cannot be mistaken for a
+   series or a status. */
+.check input:checked { background: var(--phosphor); border-color: var(--phosphor); }
+.check input::after {
+  content: "\2713";
+  font-size: 11px;
+  line-height: 1;
+  color: var(--plane);
+  opacity: 0;
+}
+.check input:checked::after { opacity: 1; }
+/* Enhancement only: the box above already carries the state on its own, so a
+   browser without :has() still shows a checked filter as checked. */
+.check:has(input:checked) {
+  color: var(--ink);
+  border-color: var(--rule);
+  background: var(--surface-2);
+}
+.check .count {
+  color: var(--phosphor-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+/* -------------------------------- tiles --------------------------------- */
+
+/* Headline numbers ride in the filter strip rather than owning a row of their
+   own -- four values do not need 130px of vertical space. */
+.tiles { display: flex; gap: 18px; flex-wrap: wrap; align-items: stretch; }
+.tile {
+  border-left: 2px solid var(--phosphor-dim);
+  padding: 1px 0 1px 10px;
+  min-width: 104px;
+}
+.tile .k {
+  color: var(--ink-muted);
+  font-size: 9.5px;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+}
+.tile .v {
+  font-size: 19px; font-weight: 700; color: var(--ink);
+  line-height: 1.25; margin-top: 1px;
+}
+.tile .sub { color: var(--ink-muted); font-size: 10.5px; }
+
+/* ------------------------------- panels --------------------------------- */
+
+/* ------------------------------ the grid --------------------------------
+   Six panels on one screen. The feed and the task matrix are the two that
+   genuinely need height, so they get full-height columns; the summary panels
+   stack in the middle; the run log is a short full-width strip.
+   Area names stay constant so a panel keeps its identity when the feed is
+   absent and the layout re-flows.                                          */
+
+.grid {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr) minmax(0, 1.05fr);
+  /* Every content row takes an equal share, and the panels scroll.
+     Pass rate used to size to its content, on the reasoning that one short row
+     per harness would leave a stretched panel mostly empty. That holds for two
+     or three runs; at five -- each carrying a partial-credit line -- it grew
+     past 500px, and because it shares row 1 with the model filters it set the
+     height of both and squeezed everything underneath into a strip too short
+     to read. A panel that has more to show than fits is the normal case here,
+     so they scroll rather than push their neighbours off the screen. */
+  /* Row 1 carries the model panel, which has a fixed amount to say -- a select,
+     four tiles, the harness chips and the run controls -- and clips rather than
+     scrolling gracefully when it is short. It takes the larger share; pass rate
+     sits beside it and scrolls, which it does not mind. */
+  grid-template-rows:
+    minmax(0, 1.35fr) minmax(0, 1fr) minmax(0, 1fr) minmax(80px, auto);
+  /* `head` is the filter block. It occupies one column instead of a full-width
+     band, so the matrix and the pass rate begin at the top of the page and keep
+     the height the strip used to take from every column at once.
+
+     Every name here has to stay a *rectangle*: an invalid grid-template-areas
+     is dropped whole and silently, taking the layout with it. */
+  grid-template-areas:
+    "head rate matrix"
+    "feed eff  matrix"
+    "feed cost matrix"
+    "log  log  log";
+}
+.grid[data-feed="off"] {
+  /* No feed column to fill, so the two cost panels take the width of the left
+     two columns rather than leaving a gap where the feed was. */
+  grid-template-areas:
+    "head rate matrix"
+    "eff  eff  matrix"
+    "cost cost matrix"
+    "log  log  log";
+}
+
+section.panel {
+  grid-area: var(--area);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;                 /* without this the body cannot scroll */
+  min-width: 0;
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  background: var(--surface);
+  overflow: hidden;
+}
+.panel-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 7px 11px;
+  border-bottom: 1px solid var(--hairline);
+}
+.panel-head h2 {
+  margin: 0;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--phosphor-dim);
+  white-space: nowrap;
+}
+.panel-head .note {
+  color: var(--ink-muted);
+  font-size: 10.5px;
+  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.panel-body {
+  flex: 1;
+  min-height: 0;
+  padding: 11px;
+  overflow: auto;
+}
+
+.toggle-view {
+  font-size: 9.5px;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  padding: 3px 8px;
+  flex: none;
+}
+
+/* ----------------------------- leaderboard ------------------------------ */
+
+.lb { display: grid; gap: 9px; min-width: 0; }
+/* Name over bar rather than beside it: at this column width a side-by-side
+   layout squeezed the label into two cramped lines and left the bar stubby. */
+.lb-row { display: grid; grid-template-columns: 1fr auto; gap: 2px 10px; align-items: center; }
+.lb-name {
+  display: flex; align-items: center; gap: 6px; min-width: 0;
+  grid-column: 1; grid-row: 1;
+}
+.lb-row .lb-track { grid-column: 1 / -1; grid-row: 2; }
+.lb-row .lb-val { grid-column: 2; grid-row: 1; }
+.lb-name .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lb-name .mdl { color: var(--ink-muted); font-size: 11px; }
+.lb-track { position: relative; height: 20px; min-width: 0; }
+.lb-grid { position: absolute; inset: 0; }
+.lb-grid i {
+  position: absolute; top: 0; bottom: 0; width: 1px;
+  background: var(--grid);
+}
+.lb-bar {
+  position: absolute; top: 5px; height: 9px;
+  border-radius: 0 4px 4px 0;   /* rounded data-end, anchored at the baseline */
+  left: 0;
+}
+.lb-ci {
+  position: absolute; top: 8.5px; height: 2px;
+  background: rgba(232, 245, 238, 0.55);
+}
+.lb-ci::before, .lb-ci::after {
+  content: ""; position: absolute; top: -4px; width: 2px; height: 10px;
+  background: rgba(232, 245, 238, 0.55);
+}
+.lb-ci::before { left: 0; } .lb-ci::after { right: 0; }
+.lb-val {
+  text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap;
+  display: flex; align-items: baseline; gap: 6px;
+}
+.lb-val .pct { font-size: 15px; font-weight: 700; }
+.lb-val .of { color: var(--ink-muted); font-size: 10px; }
+
+/* Partial credit. Deliberately quiet and set apart from the pass rate: it is a
+   different measurement, not a second opinion on the same one, and it must
+   never be mistaken for the score. */
+.lb-checks {
+  margin-left: 10px; padding-left: 10px;
+  border-left: 1px solid var(--hairline);
+  color: var(--ink-muted); font-size: 10px; line-height: 1.35;
+  text-align: right; white-space: nowrap;
+}
+.lb-checks b { color: var(--ink-2); font-weight: 600; }
+/* The all-inclusive total is context, not the headline: quieter so the eye
+   lands on the partial credit, which is the part the pass rate has not said. */
+.lb-checks-all { color: var(--ink-muted); }
+.axis-row { color: var(--ink-muted); font-size: 10px; font-variant-numeric: tabular-nums; }
+.axis-ticks { position: relative; height: 12px; }
+.axis-ticks span { position: absolute; transform: translateX(-50%); }
+
+/* ------------------------------- matrix --------------------------------- */
+
+.mx { border-collapse: separate; border-spacing: 0; font-size: 11px; width: 100%; }
+.mx th, .mx td { padding: 0; }
+.mx thead th {
+  position: sticky; top: -11px; z-index: 3;  /* -11px cancels .panel-body padding */
+  background: var(--surface);
+  border-bottom: 1px solid var(--rule);
+  padding: 5px 4px;
+  font-weight: 600;
+  color: var(--ink-2);
+  text-align: center;
+  vertical-align: bottom;
+  white-space: nowrap;
+  font-size: 10px;
+}
+.mx thead th.task-col, .mx tbody th {
+  position: sticky; left: -11px; z-index: 2;
+  background: var(--surface);
+  text-align: left;
+  padding: 2px 8px 2px 4px;
+  font-weight: 400;
+  color: var(--ink-2);
+  white-space: nowrap;
+  max-width: 210px; overflow: hidden; text-overflow: ellipsis;
+  border-right: 1px solid var(--hairline);
+  font-size: 10.5px;
+}
+.mx thead th.task-col { z-index: 4; }
+.mx tbody tr:hover th { color: var(--ink); }
+.cell-wrap { padding: var(--gap); }       /* the 2px surface gap between fills */
+.cell {
+  display: flex; align-items: center; justify-content: center;
+  width: 100%; min-width: 34px; height: 17px;
+  border-radius: 3px;
+  font-size: 9.5px; font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  cursor: default;
+}
+.cell.pass    { background: rgba(12, 163, 12, 0.24);  color: #4fe07a; }
+.cell.fail    { background: rgba(232, 245, 238, 0.05); color: var(--ink-muted); }
+/* Half the checks or better: a near miss, not a blank. Brighter ink so the
+   "almost" cases stand out from the total failures at a glance. */
+.cell.fail.near { background: rgba(250, 178, 25, 0.12); color: #c9a24a; }
+.cell.error   { background: rgba(208, 59, 59, 0.22);  color: #f08a8a; }
+.cell.timeout { background: rgba(250, 178, 25, 0.20); color: #f6c657; }
+/* Passed, but the agent was killed at the time limit. Still a pass -- the amber
+   underline just flags that it was finishing on borrowed time. */
+.cell.pass.late { box-shadow: inset 0 -2px 0 0 var(--warning); }
+.cell.pending { background: transparent; color: rgba(232, 245, 238, 0.14); }
+/* Deliberately cool and quiet: an unscored trial is not a result. It must not
+   read as a near-miss (warm) or a fault (red) at a glance across the grid. */
+.cell.unscored { background: rgba(122, 162, 201, 0.16); color: #7aa2c9; }
+.mx-legend {
+  /* Above both sticky headers: the task-name column is sticky at z-index 2 and
+     would otherwise paint over the legend as rows scroll past under it, eating
+     the first words of each entry and letting task names bleed through. */
+  position: sticky; bottom: -11px; z-index: 5;
+  display: flex; flex-wrap: wrap; gap: 4px 14px;
+  margin-top: 10px; padding-top: 8px;
+  /* Pays back the panel's 11px, which `bottom: -11px` pulled the legend into.
+     Without it the last line sits in the padding with no background under it. */
+  padding-bottom: 11px;
+  border-top: 1px solid var(--hairline);
+  background: var(--surface);
+  color: var(--ink-muted); font-size: 10px;
+}
+.mx-legend b { font-weight: 700; }
+
+
+/* ------------------------------ scatter --------------------------------- */
+
+.scatter { position: relative; }
+.scatter svg { display: block; width: 100%; height: auto; }
+.sc-label { font-size: 11px; fill: var(--ink-2); }
+.sc-axis  { font-size: 10.5px; fill: var(--ink-muted); }
+
+/* ------------------------------- tables --------------------------------- */
+
+table.data { width: 100%; border-collapse: collapse; font-size: 11px; }
+table.data th {
+  position: sticky; top: -11px; z-index: 2; background: var(--surface);
+  text-align: left; padding: 5px 9px;
+  color: var(--ink-muted); font-weight: 600;
+  font-size: 9.5px; letter-spacing: 0.09em; text-transform: uppercase;
+  border-bottom: 1px solid var(--rule); white-space: nowrap;
+}
+table.data td {
+  padding: 5px 9px; border-bottom: 1px solid var(--hairline);
+  font-variant-numeric: tabular-nums; vertical-align: top;
+}
+table.data tr:last-child td { border-bottom: none; }
+table.data tr:hover td { background: var(--surface-2); }
+.num { text-align: right; }
+.status-pill {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase;
+}
+.status-pill.running { color: var(--warning); }
+.status-pill.complete { color: var(--ink-2); }
+.status-pill.stopped { color: var(--serious); }
+.mono-dim { color: var(--ink-muted); font-size: 11px; word-break: break-all; }
+.badge {
+  display: inline-block;
+  padding: 1px 6px;
+  border: 1px solid var(--warning);
+  border-radius: 3px;
+  color: var(--warning);
+  font-size: 9.5px;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  vertical-align: 1px;
+}
+.badge-subset { border-color: var(--phosphor-dim); color: var(--phosphor-dim); }
+
+/* ------------------------------ live feed ------------------------------- */
+
+/* The feed panel is itself a flex column so the scroller fills whatever is
+   left after the meta line and the (conditional) explanation note. */
+.panel.feed-panel .panel-body { display: flex; flex-direction: column; gap: 8px; padding: 9px; }
+.feed-meta {
+  flex: none;
+  display: flex; flex-wrap: wrap; gap: 4px 14px; align-items: center;
+  color: var(--ink-2); font-size: 11.5px;
+}
+.feed-meta b { color: var(--ink); font-weight: 700; }
+.feed-quiet { color: var(--warning); }
+.feed-note {
+  flex: none;
+  padding: 6px 9px;
+  border-left: 2px solid var(--warning);
+  background: rgba(250, 178, 25, 0.07);
+  color: var(--ink-muted); font-size: 10.5px; line-height: 1.5;
+}
+.feed {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  background: #05080b;
+  border: 1px solid var(--hairline); border-radius: 5px;
+  padding: 10px 12px;
+}
+.feed-entry { margin-bottom: 8px; display: flex; gap: 8px; align-items: flex-start; }
+.feed-entry:last-child { margin-bottom: 0; }
+.feed-tag {
+  flex: none; width: 50px; padding-top: 1px;
+  font-size: 8.5px; letter-spacing: 0.09em; text-transform: uppercase;
+  color: var(--ink-muted); text-align: right;
+}
+.feed-text {
+  flex: 1; min-width: 0;
+  white-space: pre-wrap; overflow-wrap: anywhere;
+  color: var(--ink-2); font-size: 11.5px; line-height: 1.55;
+}
+.feed-entry.tool   .feed-tag { color: var(--s1); }
+.feed-entry.tool   .feed-text { color: var(--ink); }
+.feed-entry.result .feed-text { color: var(--ink-muted); }
+.feed-entry.meta   .feed-text { color: var(--ink-muted); font-style: italic; }
+.feed-entry:last-child .feed-text { color: var(--ink); }
+.feed-cursor {
+  display: inline-block; width: 7px; height: 13px;
+  background: var(--phosphor); vertical-align: -2px; margin-left: 3px;
+  animation: blink 1.1s step-end infinite;
+}
+@keyframes blink { 50% { opacity: 0; } }
+
+/* ------------------------------ tooltip --------------------------------- */
+
+#tip {
+  position: fixed; z-index: 50; pointer-events: none;
+  padding: 9px 12px; max-width: 340px;
+  background: #05080b; border: 1px solid var(--rule); border-radius: 5px;
+  box-shadow: 0 10px 34px rgba(0, 0, 0, 0.75);
+  font-size: 12px; color: var(--ink); line-height: 1.5;
+  opacity: 0; transition: opacity 0.1s;
+}
+#tip.on { opacity: 1; }
+#tip .t-h { color: var(--phosphor-dim); font-weight: 700; margin-bottom: 4px; }
+#tip .t-r { color: var(--ink-2); }
+#tip .t-r b { color: var(--ink); font-weight: 700; }
+#tip .t-checks {
+  margin: 5px 0;
+  padding: 5px 0;
+  border-top: 1px solid var(--hairline);
+  border-bottom: 1px solid var(--hairline);
+}
+#tip .t-chk { color: var(--ink-2); font-size: 11.5px; line-height: 1.5; }
+#tip .t-chk .ok { color: #4fe07a; font-weight: 700; }
+#tip .t-chk .no { color: #f08a8a; font-weight: 700; }
+
+/* ------------------------------- misc ----------------------------------- */
+
+#app {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  transition: opacity 0.18s;                 /* hold the last render on refetch */
+}
+#app.stale { opacity: 0.55; }
+.empty {
+  height: 100%; display: flex; align-items: center; justify-content: center;
+  padding: 12px; text-align: center; color: var(--ink-muted); font-size: 11.5px;
+}
+.empty code { color: var(--phosphor-dim); }
+.hidden { display: none !important; }
+footer {
+  flex: none;
+  color: var(--ink-muted); font-size: 10px; text-align: center; padding-top: 2px;
+}
+
+/* Narrow viewports get the ordinary stacked document back -- a three-column
+   grid at 900px would be six unreadable slivers. */
+@media (max-width: 1180px), (max-height: 620px) {
+  body { overflow: auto; }
+  .wrap { max-width: 1440px; }
+  .grid, .grid[data-feed="off"] {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: none;
+    grid-template-areas: none;
+  }
+  section.panel, .filters { grid-area: auto; }
+  /* Back to a full-width strip: in one column there is no narrow column to fit,
+     and stacking the controls would just make the header tall for no gain. */
+  .filters { flex-direction: row; flex-wrap: wrap; align-items: center; gap: 8px 18px; }
+  .filters select#model-select { width: auto; }
+  .panel-body { max-height: 60vh; }
+  .panel.feed-panel .panel-body { height: 55vh; max-height: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .live.on .dot { animation: none; }
+  * { transition: none !important; }
+}
+
+/* =========================== control plane ==============================
+   Tabs and forms for configuring, launching and maintaining runs. The
+   Results tab keeps the fixed single-screen grid; every other tab is an
+   ordinary scrolling document, because a form that cannot scroll is a form
+   with fields you cannot reach.
+------------------------------------------------------------------------- */
+
+.tabs {
+  flex: none;
+  display: flex; gap: 2px; align-items: stretch;
+  border-bottom: 1px solid var(--rule);
+  margin-bottom: 8px;
+  /* The horizontal scroll is deliberate: the tab row has to survive a narrow
+     window. The vertical axis is not -- setting overflow on one axis makes the
+     other compute to `auto` rather than staying `visible`, so a fraction of a
+     pixel of height overflow was enough to put a scrollbar on a strip of five
+     buttons. Pin it shut; nothing here is ever taller than the row. */
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+.tabs button {
+  appearance: none;
+  background: transparent; border: 1px solid transparent; border-bottom: none;
+  color: var(--ink-muted);
+  font: inherit; font-size: 11.5px; letter-spacing: 0.08em; text-transform: uppercase;
+  padding: 7px 14px; cursor: pointer; white-space: nowrap;
+  border-radius: 3px 3px 0 0;
+}
+.tabs button:hover { color: var(--ink-2); background: var(--surface-2); }
+.tabs button[aria-selected="true"] {
+  color: var(--phosphor); background: var(--surface);
+  border-color: var(--rule); border-bottom: 1px solid var(--surface);
+  margin-bottom: -1px;
+}
+.tabs .tab-flag {
+  margin-left: 7px; padding: 1px 5px; border-radius: 2px;
+  font-size: 9.5px; background: var(--surface-3); color: var(--ink-2);
+}
+.tabs .tab-flag.live { background: var(--phosphor); color: #000; font-weight: 700; }
+
+.tabpane { display: none; min-height: 0; }
+.tabpane.on { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.tabpane.doc { display: none; }
+.tabpane.doc.on { display: block; flex: 1; overflow-y: auto; padding-bottom: 40px; }
+
+/* ------------------------------- cards ---------------------------------- */
+
+.card {
+  background: var(--surface); border: 1px solid var(--rule);
+  border-radius: 3px; margin-bottom: 10px;
+}
+.card > h2 {
+  margin: 0; padding: 8px 12px;
+  font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase;
+  color: var(--phosphor-dim); font-weight: 700;
+  border-bottom: 1px solid var(--rule);
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+}
+.card > h2 .sub {
+  font-size: 10px; letter-spacing: 0; text-transform: none;
+  color: var(--ink-muted); font-weight: 400;
+}
+.card-body { padding: 12px; }
+.card-body > p {
+  margin: 0 0 10px; color: var(--ink-2); font-size: 11.5px; max-width: 78ch;
+}
+.card-body > p.why {
+  border-left: 2px solid var(--rule); padding-left: 9px; color: var(--ink-muted);
+}
+.cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
+
+/* ------------------------------- forms ---------------------------------- */
+
+.field { margin-bottom: 11px; }
+.field > label {
+  display: block; margin-bottom: 3px;
+  font-size: 10.5px; letter-spacing: 0.06em; text-transform: uppercase;
+  color: var(--ink-2);
+}
+.field .hint {
+  margin-top: 3px; font-size: 10.5px; color: var(--ink-muted); line-height: 1.45;
+}
+.field .hint code { color: var(--phosphor-dim); }
+
+input[type="text"], input[type="number"], input[type="password"], select, textarea {
+  width: 100%;
+  background: var(--plane); color: var(--ink);
+  border: 1px solid var(--hairline); border-radius: 2px;
+  font: inherit; font-size: 12px; padding: 6px 8px;
+}
+input:focus, select:focus, textarea:focus {
+  outline: none; border-color: var(--phosphor-dim);
+  box-shadow: 0 0 0 1px var(--phosphor-dim);
+}
+input:disabled, select:disabled, textarea:disabled {
+  opacity: 0.45; cursor: not-allowed;
+}
+textarea { resize: vertical; min-height: 68px; line-height: 1.45; }
+.row { display: flex; gap: 8px; align-items: flex-end; flex-wrap: wrap; }
+.row .field { flex: 1 1 180px; margin-bottom: 0; }
+
+.check { display: flex; align-items: flex-start; gap: 7px; margin-bottom: 9px; }
+.check input { width: auto; margin-top: 2px; accent-color: var(--phosphor-dim); }
+.check label { font-size: 11.5px; color: var(--ink-2); cursor: pointer; }
+.check .hint { margin-top: 2px; }
+
+/* ------------------------------ buttons --------------------------------- */
+
+.btn {
+  appearance: none; cursor: pointer;
+  background: var(--surface-3); color: var(--ink);
+  border: 1px solid var(--rule); border-radius: 2px;
+  font: inherit; font-size: 11.5px; padding: 6px 13px;
+}
+.btn:hover:not(:disabled) { background: var(--surface-2); border-color: var(--phosphor-dim); }
+.btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.btn.primary {
+  background: var(--phosphor-dim); color: #04150a; border-color: var(--phosphor);
+  font-weight: 700;
+}
+.btn.primary:hover:not(:disabled) { background: var(--phosphor); color: #000; }
+.btn.danger { color: #f0a0a0; border-color: rgba(208, 59, 59, 0.5); }
+.btn.danger:hover:not(:disabled) { background: rgba(208, 59, 59, 0.16); border-color: var(--critical); }
+.btn-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 4px; }
+
+/* ------------------------------ feedback -------------------------------- */
+
+.note {
+  padding: 8px 10px; border-radius: 2px; font-size: 11.5px;
+  border: 1px solid var(--hairline); margin-bottom: 10px;
+  white-space: pre-wrap; word-break: break-word;
+}
+.note.ok   { border-color: rgba(12,163,12,0.5);  background: rgba(12,163,12,0.10);  color: #9ae8a0; }
+.note.bad  { border-color: rgba(208,59,59,0.5);  background: rgba(208,59,59,0.10);  color: #f0a8a8; }
+.note.warn { border-color: rgba(250,178,25,0.5); background: rgba(250,178,25,0.09); color: #f2d089; }
+.note.info { color: var(--ink-2); }
+.note pre { margin: 6px 0 0; font-size: 11px; color: var(--ink-2); white-space: pre-wrap; }
+
+.checklist { list-style: none; margin: 0; padding: 0; }
+.checklist li {
+  display: flex; gap: 9px; align-items: baseline;
+  padding: 5px 0; border-bottom: 1px solid var(--hairline); font-size: 11.5px;
+}
+.checklist li:last-child { border-bottom: none; }
+.checklist .mark { font-weight: 700; flex: none; width: 1.6em; }
+.checklist .mark.ok { color: #4fe07a; }
+.checklist .mark.no { color: #f08a8a; }
+.checklist .what { flex: none; min-width: 15em; color: var(--ink); }
+.checklist .detail { color: var(--ink-muted); word-break: break-word; }
+
+/* --------------------------- console output ------------------------------ */
+
+.console {
+  background: var(--plane); border: 1px solid var(--hairline); border-radius: 2px;
+  padding: 9px 11px; height: 340px; overflow-y: auto;
+  font-size: 11px; line-height: 1.5; color: var(--ink-2);
+  white-space: pre-wrap; word-break: break-word;
+}
+.console:empty::after { content: "no output yet"; color: var(--ink-muted); }
+.console .ln { display: block; }
+.console .ln.rule { color: var(--phosphor-dim); }
+.console .ln.warn { color: var(--warning); }
+.console .ln.bad  { color: #f08a8a; }
+
+.runbar {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 8px 12px; border-bottom: 1px solid var(--rule);
+  font-size: 11.5px; color: var(--ink-2);
+}
+.runbar .state {
+  font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; font-size: 10.5px;
+}
+.runbar .state.running  { color: var(--phosphor); }
+.runbar .state.finished { color: #4fe07a; }
+.runbar .state.failed,
+.runbar .state.stopped  { color: #f08a8a; }
+.runbar .state.idle     { color: var(--ink-muted); }
+
+/* ------------------------------- lists ---------------------------------- */
+
+.itemlist { display: flex; flex-direction: column; gap: 8px; }
+.item {
+  border: 1px solid var(--hairline); border-radius: 2px;
+  background: var(--surface-2); padding: 9px 11px;
+}
+.item-head {
+  display: flex; align-items: baseline; gap: 9px; flex-wrap: wrap;
+}
+.item-head .name { color: var(--ink); font-weight: 700; }
+.item-head .meta { color: var(--ink-muted); font-size: 10.5px; }
+.item-head .spacer { flex: 1; }
+.item dl {
+  margin: 7px 0 0; display: grid;
+  grid-template-columns: max-content minmax(0, 1fr); gap: 2px 12px; font-size: 11px;
+}
+.item dt { color: var(--ink-muted); }
+.item dd { margin: 0; color: var(--ink-2); word-break: break-all; }
+
+.readonly-banner {
+  margin-bottom: 8px; padding: 7px 11px; border-radius: 2px; font-size: 11.5px;
+  border: 1px solid rgba(250,178,25,0.45); background: rgba(250,178,25,0.08);
+  color: #f2d089;
+}
+
+@media (max-width: 1180px), (max-height: 620px) {
+  .tabpane.on { display: block; }
+}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="head-inner">
+    <div class="brand">
+      <h1>harness&#8203;-bench</h1>
+      <p class="tagline">Terminal-Bench 2 &middot; one model, many harnesses</p>
+    </div>
+    <div class="live" id="live"><span class="dot"></span><span id="live-text">connecting</span></div>
+  </div>
+</header>
+
+<div class="wrap">
+  <nav class="tabs" id="tabs" role="tablist">
+    <button role="tab" data-tab="results" aria-selected="true">Results</button>
+    <button role="tab" data-tab="run" aria-selected="false">Run<span class="tab-flag hidden" id="run-flag"></span></button>
+    <button role="tab" data-tab="setup" aria-selected="false">Setup</button>
+    <button role="tab" data-tab="harnesses" aria-selected="false">Harnesses</button>
+    <button role="tab" data-tab="maintenance" aria-selected="false">Maintenance</button>
+  </nav>
+
+  <section class="tabpane on" id="pane-results" role="tabpanel">
+    <div id="app"><div class="empty">Loading&hellip;</div></div>
+    <footer id="foot"></footer>
+  </section>
+
+  <section class="tabpane doc" id="pane-run" role="tabpanel"></section>
+  <section class="tabpane doc" id="pane-setup" role="tabpanel"></section>
+  <section class="tabpane doc" id="pane-harnesses" role="tabpanel"></section>
+  <section class="tabpane doc" id="pane-maintenance" role="tabpanel"></section>
+</div>
+
+<div id="tip" role="tooltip" aria-hidden="true"></div>
+
+<script>
+"use strict";
+
+const SERIES = ["--s1","--s2","--s3","--s4","--s5","--s6","--s7","--s8"];
+const POLL_MS = 5000;
+
+const state = {
+  data: null,
+  activity: null,       // live tail of the in-flight trial
+  model: null,          // selected model fingerprint
+  hidden: new Set(),    // harness ids toggled off
+  hidePartial: false,   // smoke runs are shown until you say otherwise
+  // Which runs to show, by run_id. null means all of them -- distinct from an
+  // empty set, which means the user deselected everything and should see
+  // nothing rather than silently getting everything back.
+  runPick: null,
+  runMenuOpen: false,   // survives the 5s re-render
+  diffOnly: false,
+  tableView: new Set(), // panel ids showing their table twin
+  colors: new Map(),    // harness id -> css var  (assigned once, never by rank)
+  expanded: null,       // panel id shown full-screen, or null
+};
+
+/* Scroll position inside the expanded panel. Kept out of `state` because these
+   are written on every scroll event and read only here -- putting them in state
+   would imply the render path cares about them.
+
+   The feed is a *tail*: old lines drop off the top as new ones arrive, so an
+   absolute scrollTop means something different after every poll. Distance from
+   the bottom is the stable measure, which is what the docked feed already uses
+   and what this mirrors. `pinned` is tracked separately because sitting exactly
+   at the bottom means "follow the newest", and that has to survive content
+   arriving. Anything else keeps its place instead of being dragged down. */
+let expandedScroll = 0;
+let expandedFromBottom = 0;
+let expandedPinned = true;
+
+/* A scrollbar a pixel or two short of the end still means "at the bottom". */
+const TAIL_SLACK_PX = 24;
+
+/* Split out from the DOM so the rule itself can be tested: the element these
+   run against only exists in a browser, but getting them wrong is what makes a
+   live view either stop following or steal the reader's place. */
+function tailIsPinned(scrollTop, clientHeight, scrollHeight) {
+  return scrollTop + clientHeight >= scrollHeight - TAIL_SLACK_PX;
+}
+
+function tailScrollTop(scrollHeight, pinned, fromBottom) {
+  return pinned ? scrollHeight : Math.max(0, scrollHeight - fromBottom);
+}
+
+/* ------------------------------ helpers -------------------------------- */
+
+const $ = (sel, root) => (root || document).querySelector(sel);
+const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g,
+  (c) => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[c]));
+const pct = (x) => (x * 100).toFixed(1) + "%";
+const int = (n) => (n == null ? "—" : Math.round(n).toLocaleString());
+
+function dur(s) {
+  if (s == null) return "—";
+  if (s < 60) return s.toFixed(1) + "s";
+  if (s < 3600) return Math.floor(s / 60) + "m " + Math.round(s % 60) + "s";
+  return Math.floor(s / 3600) + "h " + Math.round((s % 3600) / 60) + "m";
+}
+
+function shortTime(iso) {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  return isNaN(d) ? "—" : d.toLocaleString(undefined,
+    { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+}
+
+/* Color follows the entity. Assigned in first-seen order and cached, so
+   toggling a harness off never repaints the survivors. */
+function colorOf(harness) {
+  if (!state.colors.has(harness)) {
+    state.colors.set(harness, SERIES[state.colors.size % SERIES.length]);
+  }
+  return "var(" + state.colors.get(harness) + ")";
+}
+
+/* ------------------------------ tooltip -------------------------------- */
+
+const tip = $("#tip");
+function showTip(evt, html) {
+  tip.innerHTML = html;
+  tip.classList.add("on");
+  tip.setAttribute("aria-hidden", "false");
+  const pad = 14, r = tip.getBoundingClientRect();
+  let x = evt.clientX + pad, y = evt.clientY + pad;
+  if (x + r.width > innerWidth - 8) x = evt.clientX - r.width - pad;
+  if (y + r.height > innerHeight - 8) y = evt.clientY - r.height - pad;
+  tip.style.left = Math.max(8, x) + "px";
+  tip.style.top = Math.max(8, y) + "px";
+}
+function hideTip() {
+  tip.classList.remove("on");
+  tip.setAttribute("aria-hidden", "true");
+}
+document.addEventListener("mouseover", (e) => {
+  const el = e.target.closest("[data-tip]");
+  if (el) showTip(e, el.getAttribute("data-tip"));
+});
+document.addEventListener("mousemove", (e) => {
+  const el = e.target.closest("[data-tip]");
+  if (el) showTip(e, el.getAttribute("data-tip")); else hideTip();
+});
+document.addEventListener("mouseleave", hideTip);
+
+/* Registered once on the document rather than per render: the dialog is rebuilt
+   every five seconds, and re-binding a key handler to a new node each time is
+   how you end up with several of them. */
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && state.expanded) closeExpanded();
+});
+
+/* ------------------------------ selection ------------------------------- */
+
+function modelsOf(data) {
+  return data.models || [];
+}
+
+function runsForModel(data) {
+  const key = state.model;
+  return (data.runs || []).filter(
+    (r) => (r.model_fingerprint || r.model_label) === key
+  );
+}
+
+/* An ad-hoc "-Tasks 3" run answers "does the adapter work"; a *named* subset
+   ("-Subset stratified-25") is a deliberate experiment every harness ran
+   identically. Only the former is a smoke test, so only the former is hidden. */
+function isSmoke(run) {
+  return run.is_partial && !run.subset;
+}
+
+function visibleRuns(data) {
+  return runsForModel(data).filter(
+    (r) => !state.hidden.has(r.harness)
+        && !(state.hidePartial && isSmoke(r))
+        && (state.runPick === null || state.runPick.has(r.run_id))
+  );
+}
+
+/* The name a run is picked by: its subset, or what it is instead of one. */
+function scopeName(run) {
+  if (run.subset) return run.subset;
+  if (run.is_partial) return "smoke";
+  return "full dataset";
+}
+
+/* Runs grouped by scope, newest first within each, for the picker. Built from
+   the model-scoped list rather than the visible one -- a run hidden by the
+   picker still has to appear in it, or there is no way to switch it back on. */
+/* Runs grouped into sweeps -- one `bench` invocation across its harnesses,
+   which is what "a run" means when you started one. Keyed on the recorded
+   batch id; runs from before sweeps had an identity fall back to their subset
+   name, which is how they have always been grouped. Newest sweep first. */
+function runGroups(data) {
+  const groups = new Map();
+  runsForModel(data).forEach((r) => {
+    const key = r.batch_id || `legacy:${scopeName(r)}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(r);
+  });
+  return [...groups.entries()]
+    .map(([key, runs]) => {
+      const sorted = runs.slice()
+        .sort((a, b) => (b.started_at || "").localeCompare(a.started_at || ""));
+      const scopes = [...new Set(sorted.map(scopeName))];
+      return {
+        // Addressed by key, not name: two sweeps of the same subset share a
+        // name, and toggling one would otherwise toggle both.
+        key,
+        // A sweep is normally one subset; only a legacy fallback can mix them.
+        name: scopes.length === 1 ? scopes[0] : scopes.join(" + "),
+        startedAt: sorted[sorted.length - 1].started_at || "",
+        runs: sorted,
+      };
+    })
+    .sort((a, b) => b.startedAt.localeCompare(a.startedAt));
+}
+
+
+function scopeBadge(run) {
+  if (run.subset) return `<span class="badge badge-subset">${esc(run.subset)}</span>`;
+  if (run.is_partial) return `<span class="badge">smoke</span>`;
+  return "";
+}
+
+/* Disambiguate repeat runs of the same harness. Two rows both reading
+   "oh-my-pi" are unreadable the moment you re-run a harness -- which is the
+   normal case here, since every model swap re-runs all of them. */
+function runLabel(run, runs) {
+  const repeats = runs.filter((r) => r.harness === run.harness).length > 1;
+  if (!repeats) return run.harness_label;
+  const when = run.started_at ? new Date(run.started_at) : null;
+  const stamp = when && !isNaN(when)
+    ? when.toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })
+    : run.run_id.slice(-15);
+  return `${run.harness_label} · ${stamp}`;
+}
+
+/* ------------------------------- panels --------------------------------- */
+
+/* Scroll positions of every panel body, keyed by panel id, so a re-render does
+   not throw the reader back to the top. Both axes: the matrix scrolls sideways
+   too once there are more than a few harnesses. */
+function capturePaneScroll() {
+  const saved = new Map();
+  document.querySelectorAll("[data-pane]").forEach((el) => {
+    if (el.scrollTop || el.scrollLeft) {
+      saved.set(el.getAttribute("data-pane"), [el.scrollTop, el.scrollLeft]);
+    }
+  });
+  return saved;
+}
+
+function restorePaneScroll(saved) {
+  saved.forEach(([top, left], id) => {
+    const el = document.querySelector(`[data-pane="${id}"]`);
+    if (!el) return;
+    // Assigning past the end clamps, so a panel whose content shrank lands at
+    // its new bottom rather than throwing.
+    el.scrollTop = top;
+    el.scrollLeft = left;
+  });
+}
+
+function panel(id, title, note, bodyHtml, tableHtml, area) {
+  const showTable = state.tableView.has(id);
+  const toggle = tableHtml
+    ? `<button class="ghost toggle-view" data-table="${id}">${showTable ? "chart" : "table"}</button>`
+    : "";
+  return `
+    <section class="panel" data-panel="${esc(id)}" style="--area:${area || id}">
+      <div class="panel-head">
+        <h2>${esc(title)}</h2>
+        <div style="display:flex;align-items:center;gap:10px;min-width:0">
+          ${note ? `<span class="note">${note}</span>` : ""}
+          ${toggle}
+          <button class="ghost panel-expand" data-expand="${esc(id)}"
+                  title="Expand to full screen" aria-label="Expand ${esc(title)}">&#9974;</button>
+        </div>
+      </div>
+      <div class="panel-body" data-pane="${esc(id)}">${showTable ? tableHtml : bodyHtml}</div>
+    </section>`;
+}
+
+/* --------------------------- 1. stat tiles ------------------------------ */
+
+function renderTiles(data, runs) {
+  const done = runs.filter((r) => r.n_done > 0);
+  const best = done.slice().sort((a, b) => b.pass_rate - a.pass_rate)[0];
+  const worst = done.slice().sort((a, b) => a.pass_rate - b.pass_rate)[0];
+  const spread = best && worst && best !== worst ? best.pass_rate - worst.pass_rate : null;
+  const running = (data.runs || []).filter((r) => r.status === "running").length;
+  const model = modelsOf(data).find(
+    (m) => (m.fingerprint || m.label) === state.model
+  );
+  const ctxWindow = model ? model.context_window || model.n_ctx || 0 : 0;
+
+  const tiles = [
+    {
+      k: "best harness",
+      v: best ? pct(best.pass_rate) : "—",
+      sub: best ? esc(best.harness_label) : "no runs yet",
+    },
+    {
+      k: "harness spread",
+      v: spread == null ? "—" : (spread * 100).toFixed(1) + " pts",
+      sub: spread == null ? "needs 2 harnesses" : "best minus worst, same model",
+    },
+    {
+      k: "runs on this model",
+      v: String(runs.length),
+      sub: running ? running + " in flight" : "all complete",
+    },
+    {
+      k: "context",
+      // What the harnesses were told, falling back to what the server said.
+      // An Ollama endpoint reports no window at all, so reading the probe
+      // alone showed "—" for runs whose window was configured and recorded.
+      v: ctxWindow ? (ctxWindow / 1024).toFixed(0) + "K" : "—",
+      sub: model ? esc(model.quant || "") : "",
+    },
+  ];
+
+  return `<div class="tiles">${tiles.map((t) => `
+    <div class="tile">
+      <div class="k">${esc(t.k)}</div>
+      <div class="v">${t.v}</div>
+      <div class="sub">${t.sub}</div>
+    </div>`).join("")}</div>`;
+}
+
+/* ---------------------------- 1b. live feed ----------------------------- */
+
+const TAG = { assistant: "thinking", tool: "tool", result: "output", meta: "" };
+
+function renderFeed() {
+  const a = state.activity;
+  if (!a || !a.active) return "";
+
+  const quiet = a.silent_s == null ? 0 : a.silent_s;
+  const meta = [
+    `<span><b>${esc(a.harness_label || a.harness || "agent")}</b> on
+       <b>${esc(a.task || "?")}</b></span>`,
+    a.model_label ? `<span>${esc(a.model_label)}</span>` : "",
+    a.elapsed_s != null ? `<span>elapsed <b>${dur(a.elapsed_s)}</b></span>` : "",
+    a.log_bytes ? `<span>trajectory <b>${(a.log_bytes / 1024).toFixed(0)} KB</b></span>` : "",
+    quiet > 45
+      ? `<span class="feed-quiet">no new output for ${dur(quiet)}</span>`
+      : `<span style="color:var(--good)">streaming</span>`,
+  ].join("");
+
+  // Two states routinely look like a hang and are not one. Saying so here is
+  // cheaper than the user killing a healthy run.
+  const note = quiet > 45
+    ? `<div class="feed-note">
+         Agent output is piped through <code>tee</code>, which flushes one line at
+         a time — a long unbroken reasoning block produces nothing until it ends,
+         then arrives all at once. A quiet feed is normal; an agent can also think
+         for many minutes before writing its first file.
+       </div>`
+    : "";
+
+  const body = a.entries && a.entries.length
+    ? a.entries.map((e, i) => {
+        const last = i === a.entries.length - 1;
+        return `<div class="feed-entry ${esc(e.kind)}">
+          <div class="feed-tag">${esc(TAG[e.kind] ?? e.kind)}</div>
+          <div class="feed-text">${esc(e.text)}${last ? '<span class="feed-cursor"></span>' : ""}</div>
+        </div>`;
+      }).join("")
+    : `<div class="feed-entry"><div class="feed-tag"></div>
+         <div class="feed-text">${a.phase === "agent"
+           ? "Waiting for the first output…"
+           : "Installing the harness in the task container…"}</div></div>`;
+
+  return panel(
+    "feed",
+    "live feed",
+    "tail of the running trial",
+    `<div class="feed-meta">${meta}</div>${note}<div class="feed" id="feed-scroll">${body}</div>`,
+    null,
+    "feed"
+  ).replace('class="panel"', 'class="panel feed-panel"');
+}
+
+/* --------------------------- 2. leaderboard ----------------------------- */
+
+function renderLeaderboard(runs) {
+  const rows = runs.filter((r) => r.n_done > 0)
+                   .sort((a, b) => b.pass_rate - a.pass_rate);
+  if (!rows.length) {
+    return panel("lb", "pass rate", "", `<div class="empty">No completed trials yet.</div>`, null, "rate");
+  }
+
+  const ticks = [0, 25, 50, 75, 100];
+  const grid = ticks.map((t) => `<i style="left:${t}%"></i>`).join("");
+
+  const body = `
+    <div class="lb">
+      ${rows.map((r) => {
+        const c = colorOf(r.harness);
+        const tipHtml = [
+          `<div class="t-h">${esc(r.harness_label)}</div>`,
+          `<div class="t-r">solved <b>${r.n_resolved}</b> of <b>${r.n_done}</b> scored</div>`,
+          `<div class="t-r">95% Wilson CI <b>${pct(r.ci_low)} – ${pct(r.ci_high)}</b>
+             — overlapping whiskers mean the gap is unresolved</div>`,
+          r.n_checks_total
+            ? `<div class="t-r">passed <b>${r.n_checks_passed}</b> of
+               <b>${r.n_checks_total}</b> individual checks (<b>${pct(r.check_rate)}</b>)
+               — partial credit, which the all-or-nothing score throws away.
+               Not comparable to the pass rate: tasks carry different numbers of
+               checks, so this weights a nine-check task nine times a one-check
+               one, and the checks are not equally hard.</div>`
+            : "",
+          r.n_errors ? `<div class="t-r">errored <b>${r.n_errors}</b></div>` : "",
+          // Never silent: a denominator that shrank without saying so is the
+          // one way this panel could mislead about the experiment itself.
+          r.n_unscored
+            ? `<div class="t-r">not scored <b>${r.n_unscored}</b> — the harness could
+               not send a request; excluded from the rate${
+                 r.debug_capture ? "" : " (diagnostics were off, so the cause is unrecorded)"}</div>`
+            : "",
+          `<div class="t-r">concurrency <b>${r.n_concurrent == null ? "?" : r.n_concurrent}</b>
+             ${r.n_concurrent_agents != null
+               ? `· generating at once <b>${r.n_concurrent_agents}</b>` : ""}
+             ${r.endpoint_slots != null
+               ? `· endpoint slots <b>${r.endpoint_slots}</b>` : ""}</div>`,
+          // Queued requests inflate latency and the bill lands on whichever
+          // harness makes more calls, which is the thing being measured.
+          r.endpoint_slots != null && r.n_concurrent_agents > r.endpoint_slots
+            ? `<div class="t-r warn-line">ran more agents than the endpoint had
+               slots — requests queued, and the wait fell hardest on whichever
+               harness made more calls</div>`
+            : "",
+          r.max_retries
+            ? `<div class="t-r">retried failed trials up to <b>${r.max_retries}</b>×</div>`
+            : "",
+          r.context_window
+            ? `<div class="t-r${r.context_window_source === "fallback" ? " warn-line" : ""}">
+               harnesses told the window is
+               <b>${(r.context_window / 1024).toFixed(0)}K</b>
+               (${int(r.context_window)}), max <b>${int(r.agent_max_tokens)}</b> out${
+                 // "4K, detected" and "4K, because nothing knew" are not the
+                 // same claim about a run. Only the second is a warning.
+                 r.context_window_source === "fallback"
+                   ? " &mdash; a fallback: neither the server nor the configuration"
+                     + " said, so this may not be the window actually served"
+                   : r.context_window_source
+                     ? ` (${esc(r.context_window_source)})`
+                     : ""
+               }</div>`
+            : "",
+          // Only shown when it is not the harness default: a run that was told
+          // not to think is a different experiment from one that was, and the
+          // rest of this panel would describe the two identically.
+          r.reasoning_effort && r.reasoning_effort !== "high"
+            ? `<div class="t-r">reasoning effort <b>${esc(r.reasoning_effort)}</b>${
+                 r.reasoning_effort_source
+                   ? ` (${esc(r.reasoning_effort_source)})`
+                   : ""
+               }</div>`
+            : "",
+        ].join("");
+        return `
+        <div class="lb-row">
+          <div class="lb-name">
+            <span class="swatch" style="background:${c}"></span>
+            <span style="min-width:0">
+              <span class="nm">${esc(runLabel(r, rows))} ${scopeBadge(r)}</span>
+              <span class="mdl">${
+                r.status === "running" ? "in flight · "
+                : r.status === "stopped" ? "stopped · "
+                : ""
+              }${r.n_done}/${r.n_total}</span>
+            </span>
+          </div>
+          <div class="lb-track" data-tip="${esc(tipHtml)}">
+            <div class="lb-grid">${grid}</div>
+            <div class="lb-bar" style="width:${(r.pass_rate * 100).toFixed(2)}%;background:${c}"></div>
+            <div class="lb-ci" style="left:${(r.ci_low * 100).toFixed(2)}%;width:${((r.ci_high - r.ci_low) * 100).toFixed(2)}%"></div>
+          </div>
+          <div class="lb-val">
+            <span class="pct">${pct(r.pass_rate)}</span>
+            <span class="of">${r.n_resolved}/${r.n_done}</span>
+          </div>
+          ${r.n_checks_total ? renderChecks(r) : ""}
+        </div>`;
+      }).join("")}
+      <div class="axis-row">
+        <div class="axis-ticks">${ticks.map((t) => `<span style="left:${t}%">${t}%</span>`).join("")}</div>
+      </div>
+    </div>`;
+
+  const table = `
+    <table class="data">
+      <thead><tr>
+        <th>harness</th><th class="num">pass rate</th><th class="num">95% CI</th>
+        <th class="num">solved</th><th class="num">scored</th><th class="num">errors</th>
+        <th class="num">median task</th><th class="num">out tok / solve</th>
+        <th class="num">out tok / trial</th>
+      </tr></thead>
+      <tbody>${rows.map((r) => `
+        <tr>
+          <td>${esc(r.harness_label)}</td>
+          <td class="num">${pct(r.pass_rate)}</td>
+          <td class="num">${pct(r.ci_low)} – ${pct(r.ci_high)}</td>
+          <td class="num">${r.n_resolved}</td>
+          <td class="num">${r.n_done}</td>
+          <td class="num">${r.n_errors}</td>
+          <td class="num">${dur(r.median_duration_s)}</td>
+          <td class="num">${int(r.mean_output_tokens_per_solve)}</td>
+          <td class="num"${r.n_token_samples != null && r.n_token_samples < r.n_done
+            ? ` title="over ${r.n_token_samples} of ${r.n_done} trials; the rest reported no usage"`
+            : ""}>${int(r.mean_output_tokens_per_trial)}${
+            r.n_token_samples != null && r.n_token_samples < r.n_done ? "*" : ""}</td>
+        </tr>`).join("")}
+      </tbody>
+    </table>`;
+
+  // Kept short: the panel header is a narrow column and a long note just
+  // truncates. The full explanation lives on each bar's tooltip.
+  const note = `whiskers = 95% CI`;
+  return panel("lb", "pass rate", note, body, table, "rate");
+}
+
+/* Partial credit, reported as two numbers because one of them is mostly the
+   pass rate again.
+ *
+ * A solved task passes every check by definition, so it contributes a
+ * guaranteed 100% to any total that includes it. Measured on four runs here,
+ * that is 43 of 43 checks for one of them -- and ranking by the all-inclusive
+ * figure put that run top while ranking by what it salvaged from its failures
+ * put it bottom. So the number that leads is the one over tasks it did *not*
+ * solve: that is the question the panel exists to answer, "how close did the
+ * misses come", and it is the only part the pass rate has not already told you.
+ *
+ * The all-inclusive figure stays, quieter, because it is what someone who has
+ * read this panel before will expect to see and its absence would read as a
+ * number having gone missing.                                              */
+function renderChecks(r) {
+  const overall = `${r.n_checks_passed}/${r.n_checks_total}`;
+  // Older result files predate the split, and every run in a comparison has to
+  // render even when one of them was collected by a previous version.
+  if (!r.n_checks_missed_total) {
+    return `<div class="lb-checks" title="Every individual check this run passed, over every check it faced. Scoring is all-or-nothing, so this is how close it got — not a score, and not comparable to the pass rate.">
+              <b>${pct(r.check_rate)}</b> of checks
+              <div>${overall}</div>
+            </div>`;
+  }
+  const missed = `${r.n_checks_missed_passed}/${r.n_checks_missed_total}`;
+  return `<div class="lb-checks" title="Of the checks belonging to tasks this run did not solve, how many it still passed — the partial credit the all-or-nothing score throws away. Reported separately because a solved task passes every check by definition, so including them mostly restates the pass rate. Neither figure is a score: tasks carry different numbers of checks and the checks are not equally hard.">
+            <b>${pct(r.missed_check_rate)}</b> of checks on ${r.n_missed} unsolved
+            <div>${missed} <span class="lb-checks-all">· ${overall} incl. solved</span></div>
+          </div>`;
+}
+
+/* ----------------------------- 3. matrix -------------------------------- */
+
+const CELL = {
+  pass:    { cls: "pass",    glyph: "✓", word: "solved" },
+  fail:    { cls: "fail",    glyph: "·", word: "failed" },
+  error:   { cls: "error",   glyph: "!", word: "errored" },
+  timeout: { cls: "timeout", glyph: "T", word: "ran out of time" },
+  pending: { cls: "pending", glyph: "·", word: "not run" },
+  unscored: { cls: "unscored", glyph: "~", word: "request never reached the model" },
+};
+
+function cellFor(run, task) {
+  const t = (run._byTask || {})[task];
+  if (!t) return { ...CELL.pending, task: null };
+  const timedOut = !!t.error_type && /timeout/i.test(t.error_type);
+
+  // The verifier runs even when the agent is killed, grading whatever was left
+  // on disk -- so a trial can time out *and* pass. The reward is ground truth,
+  // and it is what the pass rate counts, so the cell must agree with it.
+  // Checking the exception first would show a solved task as a timeout.
+  if (t.resolved) return { ...CELL.pass, task: t, late: timedOut };
+
+  // The connection to the model died mid-trial. That is infrastructure, not
+  // the harness being wrong, and it is excluded from the pass rate -- so it
+  // must not wear the same "!" as a harness that crashed on its own.
+  if (t.fault === "transport") return { ...CELL.unscored, task: t };
+
+  // A timeout is not a crash and not a wrong answer -- the agent was still
+  // working when the budget ran out. Lumping it in with errors hides the single
+  // most actionable signal when driving a slow local model.
+  //
+  // The verifier still ran, so a timed-out trial can carry partial credit, and
+  // returning here before the check-ratio branch below threw that away: the
+  // cell said "T" while the tooltip said "1 of 3 checks passed". Both facts fit
+  // in the cell, and which one you need depends on the question -- "did it run
+  // out of road" or "how far did it get". Kept as text rather than a second
+  // shade of amber, because a hue cannot say 1/3 rather than 5/6, and every
+  // other state here carries a glyph and a label rather than colour alone.
+  if (timedOut) {
+    return t.n_checks
+      ? {
+          ...CELL.timeout,
+          task: t,
+          glyph: `T ${t.n_checks_passed}/${t.n_checks}`,
+          word: `ran out of time, ${t.n_checks_passed} of ${t.n_checks} checks passed`,
+        }
+      : { ...CELL.timeout, task: t };
+  }
+  if (t.error_type) return { ...CELL.error, task: t };
+
+  // Scoring is all-or-nothing, so "5/6" and "0/6" both score zero — but one
+  // got somewhere and the other did not. Show the ratio in the cell rather
+  // than a uniform dot, and tint anything that passed a check at all.
+  //
+  // The line is at "any", not at a fraction: the ratios are not comparable
+  // across tasks, because tasks have different numbers of checks and the
+  // checks are not equally hard. Half of six is not the same achievement as
+  // half of two, so a threshold would rank things the data cannot rank. That
+  // one check passed is a fact about the trial; "most of them" is a judgement.
+  if (t.n_checks) {
+    return {
+      ...CELL.fail,
+      task: t,
+      glyph: `${t.n_checks_passed}/${t.n_checks}`,
+      word: `failed ${t.n_checks - t.n_checks_passed} of ${t.n_checks} checks`,
+      near: t.n_checks_passed > 0,
+    };
+  }
+  return { ...CELL.fail, task: t };
+}
+
+/* Legend entries, keyed by the cell state they describe. Only the states
+   present in the current view are rendered -- a legend listing outcomes that
+   never occurred reads as noise, and two green ticks that differ only by an
+   underline read as a duplicate. */
+const LEGEND = [
+  ["pass", '<b style="color:#4fe07a">✓</b> solved'],
+  ["late", '<b style="color:#4fe07a;box-shadow:inset 0 -2px 0 0 var(--warning)">✓</b> solved, but killed at the time limit'],
+  ["near", '<b style="color:#c9a24a">1/6</b> scored zero, but passed at least one check — hover for which'],
+  ["fail", '<b style="color:var(--ink-muted)">·</b> failed'],
+  ["timeout", '<b style="color:#f6c657">T 1/3</b> out of time — with whatever checks it had passed by then'],
+  ["error", '<b style="color:#f08a8a">!</b> errored (harness fault, not a wrong answer)'],
+  ["unscored", '<b style="color:#7aa2c9">~</b> the request never reached the model — not scored, not counted against the harness'],
+];
+
+function legendFor(kinds) {
+  const parts = LEGEND.filter(([k]) => kinds.has(k)).map(([, html]) => `<span>${html}</span>`);
+  // The all-or-nothing caveat only earns its space when a near miss is visible.
+  if (kinds.has("near")) {
+    parts.push('<span style="color:var(--ink-muted)">scoring is all-or-nothing: 5/6 scores the same as 0/6</span>');
+  }
+  return parts.join("");
+}
+
+/** The per-check breakdown, as a compact list for the tooltip. */
+function checkList(task) {
+  if (!task || !task.checks || !task.checks.length) return "";
+  const rows = task.checks
+    .map((c) => {
+      const ok = c.status === "passed";
+      return `<div class="t-chk">
+        <span class="${ok ? "ok" : "no"}">${ok ? "✓" : "✕"}</span> ${esc(c.name)}
+      </div>`;
+    })
+    .join("");
+  return `<div class="t-checks">${rows}</div>`;
+}
+
+function renderMatrix(data, runs) {
+  if (!runs.length) {
+    return panel("mx", "task matrix", "", `<div class="empty">No runs yet.</div>`, null, "matrix");
+  }
+
+  runs.forEach((r) => {
+    r._byTask = {};
+    r.tasks.forEach((t) => { r._byTask[t.task_name] = t; });
+  });
+
+  let tasks = (data.task_names || []).filter((name) =>
+    runs.some((r) => r._byTask[name])
+  );
+
+  if (state.diffOnly && runs.length > 1) {
+    tasks = tasks.filter((name) => {
+      const seen = runs
+        .map((r) => r._byTask[name])
+        .filter(Boolean)
+        .map((t) => !!t.resolved);
+      return seen.length > 1 && new Set(seen).size > 1;
+    });
+  }
+
+  // Which cell states actually occur, so the legend explains what is on screen
+  // rather than the full vocabulary. Two near-identical green ticks read as a
+  // duplicate when the second state has never once happened.
+  const seenKinds = new Set();
+
+  const head = `<tr>
+      <th class="task-col">task (${tasks.length})</th>
+      ${runs.map((r) => `<th><span class="swatch" style="display:inline-block;background:${colorOf(r.harness)}"></span> ${esc(runLabel(r, runs))}</th>`).join("")}
+    </tr>`;
+
+  const rows = tasks.map((name) => `
+      <tr>
+        <th title="${esc(name)}">${esc(name)}</th>
+        ${runs.map((r) => {
+          const c = cellFor(r, name);
+          const t = c.task;
+          seenKinds.add(c.late ? "late" : c.near ? "near" : c.cls);
+          const tipHtml = [
+            `<div class="t-h">${esc(name)}</div>`,
+            `<div class="t-r">${esc(r.harness_label)}: <b>${c.word}</b></div>`,
+            c.late
+              ? `<div class="t-r">tests passed, but the agent was killed at the
+                 time limit — the verifier graded what was on disk</div>`
+              : "",
+            c.cls === "unscored"
+              ? `<div class="t-r">the harness's HTTP client failed to send a
+                 request. Its cause is not in the log — most harnesses record
+                 only that sending failed. This does <b>not</b> establish that
+                 the endpoint was down; enable <b>Capture diagnostics</b> on the
+                 Run tab to sample the endpoint and settle it. Left out of the
+                 pass rate rather than counted against the harness.</div>
+                 ${t.endpoint_health && t.endpoint_health.n_samples
+                   ? `<div class="t-r">watchdog around this moment:
+                      <b>${t.endpoint_health.n_samples - t.endpoint_health.n_unreachable}
+                      of ${t.endpoint_health.n_samples}</b> samples reachable${
+                        t.endpoint_health.n_unreachable === 0
+                          ? " — the endpoint was answering, so the failure is on the client side"
+                          : ", so the endpoint really was unavailable"}</div>`
+                   : ""}`
+              : "",
+            t && t.n_checks
+              ? `<div class="t-r"><b>${t.n_checks_passed}</b> of <b>${t.n_checks}</b> checks passed</div>`
+              : "",
+            checkList(t),
+            t ? `<div class="t-r">wall clock <b>${dur(t.duration_s)}</b></div>` : "",
+            t && t.n_output_tokens != null ? `<div class="t-r">output tokens <b>${int(t.n_output_tokens)}</b></div>` : "",
+            t && t.error_type ? `<div class="t-r">exception <b>${esc(t.error_type)}</b></div>` : "",
+          ].join("");
+          const mods = `${c.late ? " late" : ""}${c.near ? " near" : ""}`;
+          return `<td><div class="cell-wrap"><div class="cell ${c.cls}${mods}" data-tip="${esc(tipHtml)}">${c.glyph}</div></div></td>`;
+        }).join("")}
+      </tr>`).join("");
+
+  const body = tasks.length
+    ? `<table class="mx">
+         <thead>${head}</thead>
+         <tbody>${rows}</tbody>
+       </table>
+       <div class="mx-legend">${legendFor(seenKinds)}</div>`
+    : `<div class="empty">${state.diffOnly ? "No disagreements — every harness got the same verdict on every shared task." : "No tasks yet."}</div>`;
+
+  const note = `<label style="cursor:pointer;color:var(--ink-2)">
+      <input type="checkbox" id="diffonly" ${state.diffOnly ? "checked" : ""}> disagreements only
+    </label>`;
+  return panel("mx", "task matrix", note, body, null, "matrix");
+}
+
+/* ---------------------------- 5. efficiency ----------------------------- */
+
+function renderEfficiency(runs) {
+  const pts = runs.filter(
+    (r) => r.median_duration_s != null && r.mean_output_tokens_per_solve != null
+  );
+  if (pts.length < 1) {
+    return panel("eff", "cost of a solve", "",
+      `<div class="empty">Appears once a trial reports token usage.</div>`,
+      null, "eff");
+  }
+
+  const W = 760, H = 340, M = { t: 18, r: 26, b: 46, l: 74 };
+  const xs = pts.map((p) => p.median_duration_s);
+  const ys = pts.map((p) => p.mean_output_tokens_per_solve);
+  const xMax = Math.max(...xs) * 1.18 || 1;
+  const yMax = Math.max(...ys) * 1.18 || 1;
+  const px = (v) => M.l + (v / xMax) * (W - M.l - M.r);
+  const py = (v) => H - M.b - (v / yMax) * (H - M.t - M.b);
+
+  const xTicks = [0, 0.25, 0.5, 0.75, 1].map((f) => f * xMax);
+  const yTicks = [0, 0.25, 0.5, 0.75, 1].map((f) => f * yMax);
+
+  const body = `
+    <div class="scatter">
+    <svg viewBox="0 0 ${W} ${H}" role="img"
+         aria-label="Median task wall clock versus mean output tokens per solved task">
+      ${yTicks.map((t) => `
+        <line x1="${M.l}" y1="${py(t)}" x2="${W - M.r}" y2="${py(t)}"
+              stroke="var(--grid)" stroke-width="1"/>
+        <text class="sc-axis" x="${M.l - 10}" y="${py(t) + 4}" text-anchor="end">${int(t)}</text>`).join("")}
+      ${xTicks.map((t) => `
+        <text class="sc-axis" x="${px(t)}" y="${H - M.b + 20}" text-anchor="middle">${dur(t)}</text>`).join("")}
+      <line x1="${M.l}" y1="${H - M.b}" x2="${W - M.r}" y2="${H - M.b}"
+            stroke="var(--baseline)" stroke-width="1"/>
+      <line x1="${M.l}" y1="${M.t}" x2="${M.l}" y2="${H - M.b}"
+            stroke="var(--baseline)" stroke-width="1"/>
+      <text class="sc-axis" x="${M.l}" y="${H - 8}" text-anchor="start">median task wall clock →</text>
+      <text class="sc-axis" x="${-(H / 2)}" y="16" transform="rotate(-90)" text-anchor="middle">mean output tokens per solved task →</text>
+      ${pts.map((p) => {
+        const c = colorOf(p.harness);
+        const x = px(p.median_duration_s), y = py(p.mean_output_tokens_per_solve);
+        const tipHtml = [
+          `<div class="t-h">${esc(p.harness_label)}</div>`,
+          `<div class="t-r">pass rate <b>${pct(p.pass_rate)}</b></div>`,
+          `<div class="t-r">median task <b>${dur(p.median_duration_s)}</b></div>`,
+          `<div class="t-r">out tokens / solve <b>${int(p.mean_output_tokens_per_solve)}</b></div>`,
+          // The same tokens over every trial. A harness that solves the cheap
+          // tasks and burns the budget on the ones it fails reads as cheap on
+          // the axis above and expensive here; that gap is the finding.
+          `<div class="t-r">out tokens / trial <b>${int(p.mean_output_tokens_per_trial)}</b>${
+            p.n_token_samples != null && p.n_token_samples < p.n_done
+              ? ` <span class="sub">over ${p.n_token_samples} of ${p.n_done}</span>` : ""}</div>`,
+        ].join("");
+        return `
+          <g data-tip="${esc(tipHtml)}">
+            <circle cx="${x}" cy="${y}" r="16" fill="transparent"/>
+            <circle cx="${x}" cy="${y}" r="7" fill="${c}"
+                    stroke="var(--surface)" stroke-width="2"/>
+            <text class="sc-label" x="${x + 13}" y="${y + 4}">${esc(p.harness_label)}</text>
+          </g>`;
+      }).join("")}
+    </svg>
+    </div>`;
+
+  const table = `
+    <table class="data">
+      <thead><tr><th>harness</th><th class="num">median task</th>
+        <th class="num">out tokens / solve</th><th class="num">out tokens / trial</th>
+        <th class="num">pass rate</th></tr></thead>
+      <tbody>${pts.map((p) => `
+        <tr><td>${esc(p.harness_label)}</td>
+          <td class="num">${dur(p.median_duration_s)}</td>
+          <td class="num">${int(p.mean_output_tokens_per_solve)}</td>
+          <td class="num">${int(p.mean_output_tokens_per_trial)}</td>
+          <td class="num">${pct(p.pass_rate)}</td></tr>`).join("")}
+      </tbody>
+    </table>`;
+
+  // Paired with cost-of-a-run, which is the same chart over every trial. Each
+  // note leads with its denominator, because that is the only difference
+  // between them and the one that decides which harness looks cheap.
+  return panel("eff", "cost of a solve",
+               "only the tasks it solved · lower-left is cheaper + faster",
+               body, table, "eff");
+}
+
+/* --------------------------- 5b. cost of a run --------------------------- */
+
+/* The same chart as cost-of-a-solve, against the other cost.
+ *
+ * Per-solve rewards a harness for losing cheaply: it counts only the tasks that
+ * worked. Measured on one sweep, claude-code averaged 26k output tokens per
+ * solved task and 125k per trial, because the tasks it solved were the cheap
+ * ones and the ones it lost ran to six figures; opencode's two figures were
+ * within 10% of each other. Same axes and same scale rules as its sibling, so
+ * the two panels can be read against each other -- a harness that moves a long
+ * way up between them is one whose failures are expensive.
+ */
+function renderCost(runs) {
+  const pts = runs.filter(
+    (r) => r.median_duration_s != null && r.mean_output_tokens_per_trial != null
+  );
+  if (pts.length < 1) {
+    return panel("cost", "cost of a run", "",
+      `<div class="empty">Appears once a trial reports token usage.</div>`,
+      null, "cost");
+  }
+
+  const W = 760, H = 340, M = { t: 18, r: 26, b: 46, l: 74 };
+  const xs = pts.map((p) => p.median_duration_s);
+  const ys = pts.map((p) => p.mean_output_tokens_per_trial);
+  const xMax = Math.max(...xs) * 1.18 || 1;
+  const yMax = Math.max(...ys) * 1.18 || 1;
+  const px = (v) => M.l + (v / xMax) * (W - M.l - M.r);
+  const py = (v) => H - M.b - (v / yMax) * (H - M.t - M.b);
+
+  const xTicks = [0, 0.25, 0.5, 0.75, 1].map((f) => f * xMax);
+  const yTicks = [0, 0.25, 0.5, 0.75, 1].map((f) => f * yMax);
+
+  const body = `
+    <div class="scatter">
+    <svg viewBox="0 0 ${W} ${H}" role="img"
+         aria-label="Median task wall clock versus mean output tokens per trial">
+      ${yTicks.map((t) => `
+        <line x1="${M.l}" y1="${py(t)}" x2="${W - M.r}" y2="${py(t)}"
+              stroke="var(--grid)" stroke-width="1"/>
+        <text class="sc-axis" x="${M.l - 10}" y="${py(t) + 4}" text-anchor="end">${int(t)}</text>`).join("")}
+      ${xTicks.map((t) => `
+        <text class="sc-axis" x="${px(t)}" y="${H - M.b + 20}" text-anchor="middle">${dur(t)}</text>`).join("")}
+      <line x1="${M.l}" y1="${H - M.b}" x2="${W - M.r}" y2="${H - M.b}"
+            stroke="var(--baseline)" stroke-width="1"/>
+      <line x1="${M.l}" y1="${M.t}" x2="${M.l}" y2="${H - M.b}"
+            stroke="var(--baseline)" stroke-width="1"/>
+      <text class="sc-axis" x="${M.l}" y="${H - 8}" text-anchor="start">median task wall clock →</text>
+      <text class="sc-axis" x="${-(H / 2)}" y="16" transform="rotate(-90)" text-anchor="middle">mean output tokens per trial →</text>
+      ${pts.map((p) => {
+        const c = colorOf(p.harness);
+        const x = px(p.median_duration_s), y = py(p.mean_output_tokens_per_trial);
+        // Not every trial reports usage, so the mean can be over fewer trials
+        // than the run scored. A narrowed sample that says nothing reads as
+        // full coverage.
+        const short = p.n_token_samples != null && p.n_token_samples < p.n_done;
+        const tipHtml = [
+          `<div class="t-h">${esc(p.harness_label)}</div>`,
+          `<div class="t-r">pass rate <b>${pct(p.pass_rate)}</b></div>`,
+          `<div class="t-r">median task <b>${dur(p.median_duration_s)}</b></div>`,
+          `<div class="t-r">out tokens / trial <b>${int(p.mean_output_tokens_per_trial)}</b>${
+            short ? ` <span class="sub">over ${p.n_token_samples} of ${p.n_done};`
+                    + ` the rest reported no usage</span>` : ""}</div>`,
+        ].join("");
+        return `
+          <g data-tip="${esc(tipHtml)}">
+            <circle cx="${x}" cy="${y}" r="16" fill="transparent"/>
+            <circle cx="${x}" cy="${y}" r="7" fill="${c}"
+                    stroke="var(--surface)" stroke-width="2"/>
+            <text class="sc-label" x="${x + 13}" y="${y + 4}">${esc(p.harness_label)}</text>
+          </g>`;
+      }).join("")}
+    </svg>
+    </div>`;
+
+  const table = `
+    <table class="data">
+      <thead><tr><th>harness</th><th class="num">median task</th>
+        <th class="num">out tokens / trial</th><th class="num">trials counted</th>
+        <th class="num">pass rate</th></tr></thead>
+      <tbody>${pts.map((p) => `
+        <tr><td>${esc(p.harness_label)}</td>
+          <td class="num">${dur(p.median_duration_s)}</td>
+          <td class="num">${int(p.mean_output_tokens_per_trial)}</td>
+          <td class="num">${p.n_token_samples ?? "—"}/${p.n_done}</td>
+          <td class="num">${pct(p.pass_rate)}</td></tr>`).join("")}
+      </tbody>
+    </table>`;
+
+  // Same reading as its sibling, because it is the same chart against the
+  // other cost: left is faster, low is cheaper. What differs is the denominator,
+  // so the note leads with that.
+  return panel("cost", "cost of a run",
+               "every trial, won or lost · lower-left is cheaper + faster",
+               body, table, "cost");
+}
+
+/* ------------------------------ 6. run log ------------------------------ */
+
+function renderRunLog(data) {
+  const all = data.runs || [];
+  // Follows the picker: it is the panel you look at to see what you selected,
+  // so showing everything here while the charts show a subset would make the
+  // filter look broken.
+  const filtered = state.runPick === null
+    ? all
+    : all.filter((r) => state.runPick.has(r.run_id));
+  const runs = filtered;
+  if (!all.length) {
+    return panel("log", "run log", "", `<div class="empty">Nothing on disk yet.</div>`, null, "log");
+  }
+  if (!runs.length) {
+    return panel("log", "run log", `0 of ${all.length} selected`,
+      `<div class="empty">No runs selected. Use the <b>runs</b> filter to pick some.</div>`,
+      null, "log");
+  }
+  const body = `
+    <table class="data">
+      <thead><tr>
+        <th>started</th><th>harness</th><th>model</th><th class="num">pass</th>
+        <th class="num">elapsed</th>
+        <th class="num">conc.</th><th class="num">time&times;</th><th>status</th>
+        <th>errors</th><th>harbor</th>
+      </tr></thead>
+      <tbody>${runs.map((r) => {
+        const errs = Object.entries(r.error_types || {});
+        return `
+        <tr>
+          <td>${shortTime(r.started_at)}</td>
+          <td>${esc(r.harness_label)} ${scopeBadge(r)}<div class="mono-dim">${esc(r.agent_ref || "")}</div></td>
+          <td>${esc(r.model_label)}<div class="mono-dim">${esc(r.model_quant || "")}</div></td>
+          <td class="num">${r.n_done ? pct(r.pass_rate) : "—"}<div class="mono-dim">${r.n_resolved}/${r.n_done}</div></td>
+          <td class="num">${r.wall_clock_s ? dur(r.wall_clock_s) : "—"}
+              ${r.llm_busy_pct != null
+                ? `<div class="mono-dim" title="Share of elapsed time the model spent generating. The rest is image pulls, harness installs and verifiers.">${r.llm_busy_pct.toFixed(0)}% generating</div>`
+                : ""}</td>
+          <td class="num">${r.n_concurrent == null ? "—" : r.n_concurrent}</td>
+          <td class="num">${r.agent_timeout_multiplier == null ? "—" : r.agent_timeout_multiplier + "×"}
+              ${r.n_timeouts ? `<div class="mono-dim" style="color:var(--warning)">${r.n_timeouts} hit the limit</div>` : ""}</td>
+          <td><span class="status-pill ${r.status}"
+                    ${r.stopped_reason ? `title="${esc(r.stopped_reason)}"` : ""}>${
+                      r.status === "running" ? "● running"
+                      : r.status === "stopped" ? "■ stopped"
+                      : "○ complete"
+                    }</span>
+              <div class="mono-dim">${r.n_done}/${r.n_total}</div></td>
+          <td>${errs.length
+                ? errs.map(([k, v]) => `<div class="mono-dim">${esc(k)} ×${v}</div>`).join("")
+                : `<span class="mono-dim">none</span>`}</td>
+          <td class="mono-dim">${esc(r.harbor_version || "")}</td>
+        </tr>`;
+      }).join("")}
+      </tbody>
+    </table>`;
+  const note = state.runPick === null
+    ? "every run on disk, newest first"
+    : `${runs.length} of ${all.length} runs selected`;
+  return panel("log", "run log", note, body, null, "log");
+}
+
+/* ------------------------------- filters -------------------------------- */
+
+/* A checkbox menu of every run for this model, grouped by scope and labelled
+   with when it started. Selecting runs by name alone is not enough once a
+   subset has been re-run -- which is the normal case here, since every model
+   swap re-runs everything -- so the start time is part of the label rather
+   than a tooltip. */
+function renderRunPicker(data) {
+  const groups = runGroups(data);
+  const all = groups.flatMap((g) => g.runs);
+  if (!all.length) return `<span class="mono-dim">none yet</span>`;
+
+  const picked = (r) => state.runPick === null || state.runPick.has(r.run_id);
+  const nOn = all.filter(picked).length;
+  // Counted in sweeps, not harnesses: seven harness runs across two sweeps is
+  // "two runs" to whoever started them, and "7" invites the question "of what".
+  const groupsOn = groups.filter((g) => g.runs.some(picked)).length;
+  const summary = state.runPick === null
+    ? `all ${groups.length}`
+    : `${groupsOn} of ${groups.length}`;
+
+  const rows = groups.map((g) => {
+    const on = g.runs.filter(picked).length;
+    return `
+      <div class="pick-group">
+        <button class="pick-head" data-pick-group="${esc(g.key)}"
+                title="Toggle every harness in this run">
+          <span class="pick-box ${on === g.runs.length ? "on" : on ? "some" : ""}"></span>
+          ${esc(g.name)}
+          <span class="mono-dim">${esc(shortTime(g.startedAt))} ·
+            ${on}/${g.runs.length} harnesses</span>
+        </button>
+        ${g.runs.map((r) => `
+          <button class="pick-row" data-pick-run="${esc(r.run_id)}">
+            <span class="pick-box ${picked(r) ? "on" : ""}"></span>
+            <span class="pick-when">${esc(shortTime(r.started_at))}</span>
+            <span class="pick-name">${esc(r.harness_label)}</span>
+            <span class="mono-dim">${r.n_done}/${r.n_total}${
+              r.wall_clock_s ? " · " + dur(r.wall_clock_s) : ""}</span>
+          </button>`).join("")}
+      </div>`;
+  }).join("");
+
+  return `
+    <div class="picker">
+      <button class="chip" id="run-picker-toggle"
+              aria-pressed="${state.runPick === null ? "false" : "true"}">
+        ${summary} &#9662;
+      </button>
+      <div class="picker-menu" ${state.runMenuOpen ? "" : "hidden"}>
+        <div class="picker-actions">
+          <button class="ghost" data-pick-all="1">select all</button>
+          <button class="ghost" data-pick-none="1">select none</button>
+        </div>
+        ${rows}
+      </div>
+    </div>`;
+}
+
+function renderFilters(data, runs) {
+  const models = modelsOf(data);
+  const harnesses = [];
+  const seen = new Set();
+  runsForModel(data).forEach((r) => {
+    if (!seen.has(r.harness)) {
+      seen.add(r.harness);
+      harnesses.push({ id: r.harness, label: r.harness_label });
+    }
+  });
+
+  const scoped = runsForModel(data);
+  const conc = new Set(scoped.map((r) => r.n_concurrent).filter((c) => c != null));
+  const mult = new Set(
+    scoped.map((r) => r.agent_timeout_multiplier).filter((m) => m != null)
+  );
+  const warnings = [];
+  if (conc.size > 1) {
+    warnings.push(`runs used different concurrency (${[...conc].join(", ")}) &mdash;
+      wall-clock is not comparable across them`);
+  }
+  if (mult.size > 1) {
+    // Different time budgets is the one mismatch that changes pass rate itself,
+    // not just timing -- a harness given 8x longer simply finishes more tasks.
+    warnings.push(`runs used different time budgets (${[...mult].map((m) => m + "×").join(", ")})
+      &mdash; pass rates are <b>not</b> comparable across them`);
+  }
+  const warn = warnings.length
+    ? `<span class="filter-label" style="color:var(--warning);text-transform:none;letter-spacing:0">
+         &#9888; ${warnings.join(" &middot; ")}
+       </span>`
+    : "";
+
+  // What the smoke filter is removing right now: every clause of visibleRuns
+  // except the filter itself. Reported so a missing run is always accounted
+  // for on screen rather than leaving the reader to wonder where it went.
+  const nSmokeHidden = runsForModel(data).filter(
+    (r) => !state.hidden.has(r.harness)
+        && isSmoke(r)
+        && (state.runPick === null || state.runPick.has(r.run_id))
+  ).length;
+
+  // Order is deliberate: what you are looking at (model, then its headline
+  // numbers), then what you are filtering out of it. The selectors used to
+  // share one line with the model; in a single column they read as a sequence.
+  return `
+    <div class="filters">
+      <div class="filter-row">
+        <div class="filter-group" style="flex:1 1 auto;min-width:0">
+          <span class="filter-label">model</span>
+          <select id="model-select">
+            ${models.map((m) => {
+              const key = m.fingerprint || m.label;
+              return `<option value="${esc(key)}" ${key === state.model ? "selected" : ""}>
+                ${esc(m.label)}${m.quant ? " — " + esc(m.quant) : ""} (${m.runs.length} run${m.runs.length === 1 ? "" : "s"})
+              </option>`;
+            }).join("")}
+          </select>
+        </div>
+      </div>
+      ${renderTiles(data, runs || [])}
+      <div class="filter-row">
+        <div class="filter-group">
+          <span class="filter-label">harness</span>
+          ${harnesses.map((h) => `
+            <button class="chip" data-harness="${esc(h.id)}"
+                    aria-pressed="${state.hidden.has(h.id) ? "false" : "true"}">
+              <span class="swatch" style="background:${colorOf(h.id)}"></span>${esc(h.label)}
+            </button>`).join("")}
+        </div>
+      </div>
+      <div class="filter-row">
+        <div class="filter-group">
+          <span class="filter-label">runs</span>
+          ${renderRunPicker(data)}
+        </div>
+        <div class="filter-group">
+          <label class="check"
+                 title="An ad-hoc --n-tasks run answers 'does the adapter work', not 'how good is this harness'. Off by default: nothing disappears unless you ask it to, and the count says what is being hidden while it is on.">
+            <input type="checkbox" id="partial-toggle"
+                   ${state.hidePartial ? "checked" : ""}>
+            hide smoke runs
+            ${state.hidePartial && nSmokeHidden
+                ? `<span class="count">${nSmokeHidden} hidden</span>`
+                : ""}
+          </label>
+        </div>
+      </div>
+      ${warn}
+    </div>`;
+}
+
+/* ------------------------------- render --------------------------------- */
+
+function render() {
+  const data = state.data;
+  const app = $("#app");
+  if (!data) return;
+
+  const models = modelsOf(data);
+  if (!models.length) {
+    app.innerHTML = `<div class="empty">
+      No runs yet. Start one:<br><br>
+      <code>conda run --no-capture-output -n harness-bench python -m bench.runner</code>
+    </div>`;
+    return;
+  }
+  if (!state.model || !models.some((m) => (m.fingerprint || m.label) === state.model)) {
+    state.model = models[0].fingerprint || models[0].label;
+  }
+  // Stable color assignment: walk every run once, in a fixed order, so a
+  // harness keeps its hue no matter which model or filter is selected.
+  [...(data.runs || [])]
+    .sort((a, b) => (a.started_at || "").localeCompare(b.started_at || ""))
+    .forEach((r) => colorOf(r.harness));
+
+  const runs = visibleRuns(data);
+
+  // Preserve the feed's scroll position across the 5s re-render, unless the
+  // user is already pinned to the bottom -- in which case follow the output.
+  // Anchored to the *bottom*, not to scrollTop: the feed is a sliding window
+  // over a growing log, so each refresh drops text off the top as well as
+  // adding it at the end. Restoring a pixel offset from the top would slide
+  // the reader backwards through the text every five seconds.
+  const prevFeed = $("#feed-scroll");
+  const wasPinned = prevFeed
+    ? prevFeed.scrollTop + prevFeed.clientHeight >= prevFeed.scrollHeight - 24
+    : true;
+  const prevFromBottom = prevFeed ? prevFeed.scrollHeight - prevFeed.scrollTop : 0;
+
+  // Every other scrollable panel keeps its place too. The whole results view is
+  // rebuilt from scratch on each poll, which silently threw the reader back to
+  // the top of an 89-row matrix every five seconds -- unusable for exactly the
+  // long runs the matrix exists to read.
+  const panes = capturePaneScroll();
+
+  const feedHtml = renderFeed();
+  app.innerHTML =
+    `<div class="grid" data-feed="${feedHtml ? "on" : "off"}">` +
+      renderFilters(data, runs) +
+      feedHtml +
+      renderLeaderboard(runs) +
+      renderMatrix(data, runs) +
+      renderEfficiency(runs) +
+      renderCost(runs) +
+      renderRunLog(data) +
+    `</div>`;
+
+  restorePaneScroll(panes);
+
+  const feed = $("#feed-scroll");
+  if (feed) {
+    feed.scrollTop = wasPinned
+      ? feed.scrollHeight
+      : Math.max(0, feed.scrollHeight - prevFromBottom);
+  }
+
+  $("#foot").textContent =
+    `${data.summary.n_runs} runs · ${data.summary.n_harnesses} harnesses · `
+    + `${data.summary.n_models} models · scanned ${new Date(data.generated_at).toLocaleTimeString()}`;
+
+  // Before wireEvents, deliberately: the expanded copy carries the same
+  // data-table and data-expand attributes, so the one wiring pass covers both
+  // and its controls behave identically to the panel it came from.
+  mountExpanded();
+  wireEvents();
+}
+
+/* Re-mounted from scratch on every render rather than left alone, so an
+   expanded panel keeps updating on the five-second poll. It is a clone of the
+   freshly rendered panel, which means there is no second rendering path to
+   keep in step with the first. */
+function mountExpanded() {
+  const app = $("#app");
+  if (!app || !state.expanded) return;
+  const source = app.querySelector(`.panel[data-panel="${state.expanded}"]`);
+  if (!source) { state.expanded = null; return; }   // panel gone this render
+
+  const clone = source.cloneNode(true);
+  // Ids and data-pane must not be duplicated: the originals own them, and
+  // capturePaneScroll keys on data-pane, so a copy would overwrite the real
+  // panel's remembered position with the modal's.
+  clone.querySelectorAll("[id]").forEach((el) => el.removeAttribute("id"));
+  clone.querySelectorAll("[data-pane]").forEach((el) => el.removeAttribute("data-pane"));
+  clone.removeAttribute("style");
+
+  const actions = clone.querySelector(".panel-head > div:last-child");
+  if (actions) {
+    actions.insertAdjacentHTML("beforeend",
+      `<button class="modal-close" data-close-modal="1" aria-label="Close">esc &#10005;</button>`);
+  }
+
+  const backdrop = document.createElement("div");
+  backdrop.className = "modal-backdrop";
+  backdrop.setAttribute("role", "dialog");
+  backdrop.setAttribute("aria-modal", "true");
+  backdrop.setAttribute("data-modal", "1");
+  backdrop.appendChild(clone);
+  app.appendChild(backdrop);
+
+  // The feed scrolls inside `.feed`, not `.panel-body`. Driving the body would
+  // move an element the reader is not looking through, which is why the
+  // expanded feed sat wherever it opened instead of following the output.
+  const tail = clone.querySelector(".feed");
+  const scroller = tail || clone.querySelector(".panel-body");
+  if (scroller) {
+    if (tail) {
+      // Follow the newest output only while already there. Otherwise hold
+      // position relative to the tail, so a poll landing mid-read does not
+      // yank the reader to the bottom.
+      scroller.scrollTop =
+        tailScrollTop(scroller.scrollHeight, expandedPinned, expandedFromBottom);
+    } else {
+      scroller.scrollTop = expandedScroll;
+    }
+    scroller.onscroll = () => {
+      expandedScroll = scroller.scrollTop;
+      expandedFromBottom = scroller.scrollHeight - scroller.scrollTop;
+      expandedPinned = tailIsPinned(
+        scroller.scrollTop, scroller.clientHeight, scroller.scrollHeight);
+    };
+  }
+}
+
+function closeExpanded() {
+  if (!state.expanded) return;
+  state.expanded = null;
+  expandedScroll = 0;
+  expandedFromBottom = 0;
+  expandedPinned = true;
+  render();
+}
+
+function wireEvents() {
+  const sel = $("#model-select");
+  if (sel) sel.onchange = (e) => { state.model = e.target.value; render(); };
+
+  document.querySelectorAll("[data-harness]").forEach((btn) => {
+    btn.onclick = () => {
+      const id = btn.getAttribute("data-harness");
+      if (state.hidden.has(id)) state.hidden.delete(id); else state.hidden.add(id);
+      render();
+    };
+  });
+
+  const pickerToggle = $("#run-picker-toggle");
+  if (pickerToggle) pickerToggle.onclick = () => {
+    state.runMenuOpen = !state.runMenuOpen;
+    render();
+  };
+
+  // Every run currently offered, so "all" and a group toggle agree on what
+  // the universe is -- the picker must never be able to select a run that is
+  // not in it.
+  const offered = runGroups(state.data).flatMap((g) => g.runs);
+  const pickedNow = () =>
+    state.runPick === null
+      ? new Set(offered.map((r) => r.run_id))
+      : new Set(state.runPick);
+  const commit = (next) => {
+    // Collapsing "everything" back to null keeps the chip honest and means a
+    // run added later is included rather than silently excluded.
+    state.runPick = next.size === offered.length ? null : next;
+    render();
+  };
+
+  document.querySelectorAll("[data-pick-run]").forEach((btn) => {
+    btn.onclick = () => {
+      const id = btn.getAttribute("data-pick-run");
+      const next = pickedNow();
+      if (next.has(id)) next.delete(id); else next.add(id);
+      commit(next);
+    };
+  });
+
+  document.querySelectorAll("[data-pick-group]").forEach((btn) => {
+    btn.onclick = () => {
+      const key = btn.getAttribute("data-pick-group");
+      const group = (runGroups(state.data).find((g) => g.key === key) || {}).runs || [];
+      const next = pickedNow();
+      const allOn = group.every((r) => next.has(r.run_id));
+      group.forEach((r) => (allOn ? next.delete(r.run_id) : next.add(r.run_id)));
+      commit(next);
+    };
+  });
+
+  const pickAll = document.querySelector("[data-pick-all]");
+  if (pickAll) pickAll.onclick = () => { state.runPick = null; render(); };
+  const pickNone = document.querySelector("[data-pick-none]");
+  if (pickNone) pickNone.onclick = () => { state.runPick = new Set(); render(); };
+
+  document.querySelectorAll("[data-table]").forEach((btn) => {
+    btn.onclick = () => {
+      const id = btn.getAttribute("data-table");
+      if (state.tableView.has(id)) state.tableView.delete(id); else state.tableView.add(id);
+      render();
+    };
+  });
+
+  const partial = $("#partial-toggle");
+  // `change`, not `click`: the input sits inside its label, so a click on the
+  // text toggles the box natively and a click handler would then invert it a
+  // second time. Read the box rather than negating state, so the two can never
+  // disagree.
+  if (partial) {
+    partial.onchange = (event) => {
+      state.hidePartial = event.target.checked;
+      render();
+    };
+  }
+
+  const diff = $("#diffonly");
+  if (diff) diff.onchange = (e) => { state.diffOnly = e.target.checked; render(); };
+
+  document.querySelectorAll("[data-expand]").forEach((btn) => {
+    btn.onclick = () => {
+      // Opening a different panel while one is open just switches, rather than
+      // stacking dialogs nobody asked for. Opening starts pinned, so the feed
+      // shows the newest output rather than wherever it happened to be.
+      expandedScroll = 0;
+      expandedFromBottom = 0;
+      expandedPinned = true;
+      state.expanded = btn.getAttribute("data-expand");
+      render();
+    };
+  });
+
+  document.querySelectorAll("[data-close-modal]").forEach((btn) => {
+    btn.onclick = closeExpanded;
+  });
+
+  const backdrop = document.querySelector("[data-modal]");
+  if (backdrop) {
+    // Only a click on the backdrop itself. Without the target check, any click
+    // that bubbles up from inside the panel would close it -- including one
+    // that just finished selecting text in the matrix.
+    backdrop.onclick = (e) => { if (e.target === backdrop) closeExpanded(); };
+  }
+}
+
+/* ========================== control plane ===============================
+   Everything below drives the non-Results tabs: configuration, launching,
+   stopping and maintenance.
+
+   Forms here are uncontrolled and re-rendered only on demand -- on tab
+   switch and after an action. The results poll runs every 5s, and
+   re-rendering a form on that tick would discard whatever the user was
+   part-way through typing. The Run tab's status bar and console are the
+   exception: they update in place, touching no input.
+------------------------------------------------------------------------ */
+
+const TOKEN = window.__HARNESS_BENCH_TOKEN__ || null;
+const READONLY = !!window.__HARNESS_BENCH_READONLY__ || !TOKEN;
+
+const cp = {
+  tab: "results",
+  server: null,        // GET /api/state
+  notice: {},          // tab -> {kind, text}
+  busy: null,          // name of the in-flight action, for button disabling
+  log: [],             // captured lines from the active job
+  logPinned: true,
+  probe: null,         // last connection-test result
+  models: null,        // {models, default, discoverable} from the endpoint
+  doctor: null,
+  orphans: null,       // GET /api/containers: leftover containers, networks, pool
+  editing: null,       // harness id open in the editor, or "+" for a new one
+};
+
+/* Every mutating call carries the per-process token in a custom header.
+   Custom headers cannot be set by cross-origin script without a preflight,
+   and the server answers none -- so this is what makes the control plane
+   unreachable from any other page in the browser. */
+async function api(path, { method = "GET", body } = {}) {
+  const opts = { method, cache: "no-store", headers: {} };
+  if (body !== undefined) {
+    opts.headers["Content-Type"] = "application/json";
+    opts.body = JSON.stringify(body);
+  }
+  if (method !== "GET" && TOKEN) opts.headers["X-Harness-Bench-Token"] = TOKEN;
+  const res = await fetch(path, opts);
+  let payload = null;
+  try { payload = await res.json(); } catch (_) { /* empty body */ }
+  if (!res.ok) throw new Error((payload && payload.error) || `HTTP ${res.status}`);
+  return payload;
+}
+
+function notice(tab, kind, text) {
+  cp.notice[tab] = text ? { kind, text } : null;
+}
+function noticeHtml(tab) {
+  const n = cp.notice[tab];
+  return n ? `<div class="note ${n.kind}">${esc(n.text)}</div>` : "";
+}
+
+/* Run an action with the button disabled and the outcome reported, so no
+   path can fail silently or be double-submitted. */
+/* Disable a pane's controls without re-rendering it.
+
+   Re-rendering here would be a bug, and was one: renderTab() replaces the
+   pane's innerHTML, so the inputs the user just filled in are destroyed and
+   rebuilt from stored state. Since fn() reads the form, it would then read the
+   *rebuilt* fields -- submitting the old values, or empty ones that the server
+   resolves to provider defaults. Every save and every connection test silently
+   used the previous configuration. */
+function setPaneBusy(on) {
+  const tab = TABS[cp.tab];
+  const pane = tab && $("#" + tab.pane);
+  if (!pane || !pane.querySelectorAll) return;
+  pane.querySelectorAll("button").forEach((b) => { b.disabled = !!on; });
+}
+
+async function act(tab, name, fn, okMessage) {
+  cp.busy = name;
+  setPaneBusy(true);
+  try {
+    // fn() reads the live DOM. Nothing may re-render before this point.
+    const result = await fn();
+    notice(tab, "ok", typeof okMessage === "function" ? okMessage(result) : okMessage);
+    await refreshServerState();
+  } catch (err) {
+    // okMessage === null means the caller renders its own result panel, so a
+    // generic banner here would just show the same error twice.
+    if (okMessage !== null) notice(tab, "bad", String(err.message || err));
+  } finally {
+    cp.busy = null;
+    setPaneBusy(false);
+    renderTab(cp.tab);
+  }
+}
+
+async function refreshServerState() {
+  try {
+    cp.server = await api("/api/state");
+  } catch (_) { /* leave the previous state up */ }
+}
+
+const val = (id) => { const el = $("#" + id); return el ? el.value.trim() : ""; };
+const num = (id) => { const v = val(id); return v === "" ? null : Number(v); };
+const checked = (id) => { const el = $("#" + id); return !!(el && el.checked); };
+
+/* --------------------------------- Setup -------------------------------- */
+
+/* The model field, in whichever form the endpoint's catalog deserves.
+
+   Before anything is fetched it is a plain text box, because a dropdown you
+   cannot populate is worse than a field you can type into. Once the catalog is
+   known the shape follows its size: a self-hosted server lists one or two
+   models and gets a real <select>, while an aggregator lists hundreds and gets
+   a typeahead instead -- scrolling 300 options to find one is not a choice, it
+   is a chore. */
+const MODEL_SELECT_MAX = 40;
+
+function renderModelField(ep, provider) {
+  const catalog = cp.models && cp.models.models ? cp.models.models : null;
+  const required = provider.model_is_discoverable ? "(optional)" : "(required)";
+  // Pre-select what the server actually has loaded, so a local endpoint needs
+  // no decision at all.
+  const current = ep.model || (cp.models ? cp.models.default : "") || "";
+
+  const hint = provider.model_is_discoverable
+    ? "A local server has one model loaded, so this is detected for you."
+    : "This provider serves many models, so name the one you mean.";
+
+  let control;
+  if (!catalog || !catalog.length) {
+    control = `<input type="text" id="ep-model" value="${esc(current)}"
+      placeholder="${provider.model_is_discoverable
+        ? "auto-detected from the server" : "e.g. qwen/qwen3-coder"}">`;
+  } else if (catalog.length <= MODEL_SELECT_MAX) {
+    const blank = provider.model_is_discoverable
+      ? `<option value="">auto-detect (${esc(cp.models.default || "first available")})</option>`
+      : `<option value="">— choose a model —</option>`;
+    control = `<select id="ep-model">${blank}${catalog.map((m) => {
+      const ctx = m.context_length
+        ? `  ·  ${Math.round(m.context_length / 1024)}K ctx` : "";
+      return `<option value="${esc(m.id)}"${m.id === current ? " selected" : ""}>`
+        + `${esc(m.id)}${esc(ctx)}</option>`;
+    }).join("")}</select>`;
+  } else {
+    control = `<input type="text" id="ep-model" list="model-options"
+      value="${esc(current)}" placeholder="type to search ${catalog.length} models">
+      <datalist id="model-options">${catalog.map((m) =>
+        `<option value="${esc(m.id)}">${esc(m.name || "")}</option>`).join("")}</datalist>`;
+  }
+
+  const count = catalog
+    ? `${catalog.length} model${catalog.length === 1 ? "" : "s"} available`
+    : "not loaded yet";
+
+  return `
+    <div class="field">
+      <label for="ep-model">Model id ${required}</label>
+      <div style="display:flex;gap:6px;align-items:stretch">
+        <div style="flex:1;min-width:0">${control}</div>
+        <button class="btn" id="btn-load-models" type="button"
+          ${cp.busy ? "disabled" : ""} title="Fetch the list from the endpoint">Load</button>
+      </div>
+      <div class="hint">${hint} <span style="color:var(--ink-muted)">(${esc(count)})</span></div>
+    </div>`;
+}
+
+function renderSetup() {
+  const s = cp.server;
+  if (!s) return `<div class="empty">Loading&hellip;</div>`;
+  const ep = s.config.endpoint;
+  const provider = s.providers.find((p) => p.id === ep.provider) || s.providers[0];
+  const busy = cp.busy;
+  const suggested = cp.probe && cp.probe.ok
+    ? (cp.probe.effective_label || cp.probe.suggested_label) : "";
+
+  const probe = cp.probe
+    ? (cp.probe.ok
+        ? `<div class="note ok">Connected.<pre>${esc(cp.probe.description)}</pre>${
+            cp.probe.speed
+              ? `<pre>${cp.probe.speed.tokens_per_s.toFixed(1)} output tok/s  →  `
+                + `suggested agent_timeout_multiplier: `
+                + `${cp.probe.speed.recommended_multiplier}</pre>`
+              : ""
+          }${cp.probe.speed_error ? `<pre>speed: ${esc(cp.probe.speed_error)}</pre>` : ""}</div>`
+        : `<div class="note bad">${esc(cp.probe.error)}</div>`)
+    : "";
+
+  return `
+  ${noticeHtml("setup")}
+  ${probe}
+  <div class="card">
+    <h2>Model endpoint <span class="sub">${esc(s.config_path)}${s.config_exists ? "" : " (not created yet)"}</span></h2>
+    <div class="card-body">
+      <p>Which model to benchmark. Everything here is written to a gitignored
+         config file &mdash; nothing reaches source control.</p>
+      <div class="cols">
+        <div>
+          <div class="field">
+            <label for="ep-provider">Provider</label>
+            <select id="ep-provider">
+              ${s.providers.map((p) => `<option value="${esc(p.id)}"${p.id === ep.provider ? " selected" : ""}>${esc(p.label)}</option>`).join("")}
+            </select>
+            <div class="hint">Any server speaking OpenAI-compatible <code>/v1</code>
+              &mdash; llama-server, vLLM, Ollama, LM Studio &mdash; or OpenRouter.</div>
+          </div>
+          <div class="field">
+            <label for="ep-base-url">Base URL</label>
+            <input type="text" id="ep-base-url" value="${esc(ep.base_url)}"
+                   placeholder="${esc(provider.default_base_url)}">
+            <div class="hint">Include the <code>/v1</code> suffix. Left empty this
+              keeps the saved URL; type <code>clear</code> to fall back to the
+              greyed-out default.</div>
+          </div>
+          ${renderModelField(ep, provider)}
+        </div>
+        <div>
+          <div class="field">
+            <label for="ep-key-env">API key environment variable</label>
+            <input type="text" id="ep-key-env" value="${esc(ep.api_key_env)}"
+                   placeholder="${esc(provider.default_api_key_env)}">
+            <div class="hint">Preferred: name the variable and keep the key in your
+              shell. The key never touches disk here.</div>
+          </div>
+          <div class="field">
+            <label for="ep-key">API key ${s.api_key_set ? "(currently set)" : "(optional)"}</label>
+            <input type="password" id="ep-key" value="" autocomplete="off"
+                   placeholder="${s.api_key_set ? "unchanged — type to replace" : "leave empty to use the variable above"}">
+            <div class="hint">Stored in the gitignored config file, written
+              <code>0600</code>. Treat that file as a credential once set.
+              ${s.api_key_set ? "Submit the word <code>clear</code> to remove it." : ""}</div>
+          </div>
+          <div class="field">
+            <label for="ep-context">Context window</label>
+            <input type="number" id="ep-context" min="0" max="10000000" step="1024"
+                   value="${esc(ep.context_window || "")}" placeholder="0 — ask the server">
+            <div class="hint">Handed to <b>every</b> harness, so none of them has to
+              guess and no two guess differently. Leave at <code>0</code> and the
+              server is asked: llama.cpp reports the loaded window, and that is the
+              right answer. Ollama does not &mdash; it exposes only the model's
+              architectural maximum, never the window the server was started with
+              &mdash; so set it here to match <code>OLLAMA_CONTEXT_LENGTH</code>.
+              Overshooting is the dangerous direction: the server truncates in
+              silence and the run scores it as a wrong answer.</div>
+          </div>
+          <div class="field">
+            <label for="ep-label">Display label (optional)</label>
+            <input type="text" id="ep-label" value="${esc(ep.label)}"
+                   placeholder="${esc(suggested || "derived from the served weights")}">
+            <div class="hint">How this model is named in results and run folders.
+              ${suggested
+                ? `Left empty you get <code>${esc(suggested)}</code>.`
+                : "Left empty it is derived from the weights filename."}
+              Saving a name pins it to these weights, so it survives a server
+              restart. Runs already on disk keep the name they were recorded with.</div>
+          </div>
+        </div>
+      </div>
+      <div class="btn-row">
+        <button class="btn primary" id="btn-save-config" ${busy ? "disabled" : ""}>Save configuration</button>
+        <button class="btn" id="btn-test" ${busy ? "disabled" : ""}>Test connection</button>
+        <button class="btn" id="btn-test-speed" ${busy ? "disabled" : ""}>Test &amp; measure speed</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Storage and privacy</h2>
+    <div class="card-body">
+      <div class="field" style="max-width:520px">
+        <label for="cfg-runs-dir">Run output directory</label>
+        <input type="text" id="cfg-runs-dir" value="${esc(s.config.runs_dir)}">
+        <div class="hint">Relative paths resolve against the repo root. Runs get
+          large &mdash; container logs and trajectories &mdash; so point this at a
+          roomy disk. Currently: <code>${esc(s.runs_dir)}</code></div>
+      </div>
+      <div class="check">
+        <input type="checkbox" id="cfg-hostname" ${s.config.record_hostname ? "checked" : ""}>
+        <div>
+          <label for="cfg-hostname">Record this machine's hostname in run manifests</label>
+          <div class="hint">Off by default. Manifests are what an exported snapshot
+            inlines, so this puts a machine name into anything you share. Useful only
+            if you compare runs across your own machines.</div>
+        </div>
+      </div>
+      <div class="btn-row">
+        <button class="btn primary" id="btn-save-storage" ${busy ? "disabled" : ""}>Save</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+function endpointFromForm() {
+  const key = val("ep-key");
+  const baseUrl = val("ep-base-url");
+  const endpoint = {
+    provider: val("ep-provider"),
+    api_key_env: val("ep-key-env"),
+    model: val("ep-model"),
+    label: val("ep-label"),
+    context_window: val("ep-context"),
+  };
+  // Empty means "leave as-is"; the literal word clear means "remove it".
+  if (key === "clear") endpoint.api_key = "";
+  else if (key !== "") endpoint.api_key = key;
+  // Same rule for the URL, because an empty box here is almost never a
+  // request to unset it -- it is a reload that dropped the draft, and the
+  // field renders the provider default as a *placeholder*, which reads as
+  // though it were filled in. Omitting it lets the stored value stand.
+  //
+  // "clear" is forwarded rather than translated to "": the server treats an
+  // empty base_url as "unchanged", so the sentinel has to survive the trip.
+  // The key needs no such care -- nothing there reinterprets "".
+  if (baseUrl !== "") endpoint.base_url = baseUrl;
+  return endpoint;
+}
+
+/* Fold what is currently typed back into the in-memory state.
+
+   Every re-render of this tab rebuilds the inputs from cp.server, so without
+   this a failed save or a failed connection test would snap the form back to
+   the stored configuration and discard the URL the user was trying to fix --
+   at exactly the moment they need to edit it. Returns the captured endpoint so
+   the caller can send precisely what it preserved.
+
+   The key is deliberately not kept in cp.server: that object is rendered, and
+   the key field is never pre-filled. */
+function captureSetupDraft() {
+  const endpoint = endpointFromForm();
+  if (cp.server) {
+    const { api_key, ...withoutKey } = endpoint;   // eslint-disable-line no-unused-vars
+    cp.server.config.endpoint = { ...cp.server.config.endpoint, ...withoutKey };
+  }
+  return endpoint;
+}
+
+function wireSetup() {
+  const sel = $("#ep-provider");
+  if (sel) sel.onchange = () => {
+    captureSetupDraft();
+    // The catalog and the probe belong to the provider that produced them.
+    // Keeping them would offer a model list from an endpoint you just left.
+    cp.models = null;
+    cp.probe = null;
+    if (cp.server) cp.server.config.endpoint.model = "";
+    // Re-render so the hints and required-ness follow the chosen provider.
+    renderTab("setup");
+  };
+
+  const save = $("#btn-save-config");
+  if (save) save.onclick = () => {
+    const endpoint = captureSetupDraft();
+    act("setup", "save", () =>
+      api("/api/config", { method: "POST", body: { endpoint } }),
+      "Configuration saved.");
+  };
+
+  const storage = $("#btn-save-storage");
+  if (storage) storage.onclick = () => {
+    const body = {
+      runs_dir: val("cfg-runs-dir"),
+      record_hostname: checked("cfg-hostname"),
+    };
+    if (cp.server) cp.server.config.runs_dir = body.runs_dir;
+    act("setup", "save", () =>
+      api("/api/config", { method: "POST", body }), "Saved.");
+  };
+
+  const load = $("#btn-load-models");
+  if (load) load.onclick = () => {
+    const endpoint = captureSetupDraft();
+    act("setup", "models", async () => {
+      cp.models = await api("/api/config/models", {
+        method: "POST", body: { endpoint },
+      });
+      // Nothing chosen yet and the server knows which model it has loaded:
+      // adopt it, so a local endpoint needs no decision at all.
+      if (!endpoint.model && cp.models.default && cp.server) {
+        cp.server.config.endpoint.model = cp.models.default;
+      }
+      return cp.models;
+    }, (r) => `Found ${r.models.length} model${r.models.length === 1 ? "" : "s"}.`);
+  };
+
+  const test = (speed) => {
+    const endpoint = captureSetupDraft();
+    act("setup", "test", async () => {
+      try {
+        cp.probe = await api("/api/config/test", {
+          method: "POST", body: { endpoint, speed },
+        });
+        // The test already fetched the catalog, so choosing a model afterwards
+        // costs no extra round trip.
+        if (cp.probe.models && cp.probe.models.length) {
+          cp.models = {
+            models: cp.probe.models,
+            default: cp.probe.default || "",
+            discoverable: cp.probe.discoverable,
+          };
+        }
+        // Record what the endpoint actually reported, so the dropdown shows the
+        // real served model rather than staying on "auto-detect".
+        if (!endpoint.model && cp.probe.identity && cp.server) {
+          cp.server.config.endpoint.model = cp.probe.identity.served_id || "";
+        }
+      } catch (err) {
+        cp.probe = { ok: false, error: String(err.message || err) };
+        throw err;
+      }
+      return cp.probe;
+    }, null);   // null: the probe panel below renders the outcome itself
+  };
+
+  const t1 = $("#btn-test"); if (t1) t1.onclick = () => test(false);
+  const t2 = $("#btn-test-speed"); if (t2) t2.onclick = () => test(true);
+}
+
+/* ---------------------------------- Run --------------------------------- */
+
+function renderRun() {
+  const s = cp.server;
+  if (!s) return `<div class="empty">Loading&hellip;</div>`;
+  const job = s.supervisor.job;
+  const active = s.supervisor.active;
+  const d = s.defaults || {};
+  const ids = Object.keys(s.harnesses || {});
+
+  const status = job ? job.status : "idle";
+  const bar = `
+    <div class="runbar">
+      <span class="state ${esc(status)}">${esc(status)}</span>
+      ${job ? `<span>${esc(job.kind)}${job.harnesses && job.harnesses.length
+        ? " · " + esc(job.harnesses.join(", ")) : ""}</span>
+        <span>started ${esc(shortTime(job.started_at))}</span>
+        ${job.returncode != null ? `<span>exit ${job.returncode}</span>` : ""}
+        ${job.stopped_reason ? `<span>${esc(job.stopped_reason)}</span>` : ""}`
+        : `<span>nothing running</span>`}
+      <span style="flex:1"></span>
+      ${active ? `<button class="btn danger" id="btn-stop">Stop</button>` : ""}
+    </div>`;
+
+  return `
+  ${noticeHtml("run")}
+  <div class="card">
+    <h2>Start a benchmark</h2>
+    <div class="card-body">
+      <p>Runs are sequential by design: one endpoint backs every harness, so two
+         at once would each measure the other's queueing delay as its own latency.
+         Only one can be active.</p>
+      <div class="field">
+        <label>Harnesses <span style="text-transform:none;letter-spacing:0">(none selected = all)</span></label>
+        ${ids.length ? ids.map((id) => `
+          <div class="check">
+            <input type="checkbox" id="h-${esc(id)}" data-harness-pick="${esc(id)}">
+            <label for="h-${esc(id)}">${esc(s.harnesses[id].label || id)}
+              <span style="color:var(--ink-muted)">${esc(id)}</span></label>
+          </div>`).join("")
+        : `<div class="note warn">No harnesses defined. Add one on the Harnesses tab.</div>`}
+      </div>
+      <div class="row">
+        <div class="field">
+          <label for="run-subset">Task subset</label>
+          <select id="run-subset">
+            <option value="">full dataset (89 tasks)</option>
+            ${(s.subsets || []).map((n) => `<option value="${esc(n)}">${esc(n)}</option>`).join("")}
+          </select>
+        </div>
+        <div class="field">
+          <label for="run-ntasks">or first N tasks</label>
+          <input type="number" id="run-ntasks" min="1" max="1000" placeholder="smoke test">
+        </div>
+        <div class="field">
+          <label for="run-mult">Timeout multiplier</label>
+          <input type="number" id="run-mult" step="0.5" min="0.1" max="100"
+                 value="${esc(d.agent_timeout_multiplier ?? 16)}">
+        </div>
+      </div>
+      <div class="field hint" style="margin-top:6px">
+        A subset run is comparable only against other runs of the same subset at the
+        same multiplier &mdash; the dashboard refuses to pair anything else. An
+        ad-hoc “first N” run is marked as a smoke test.
+      </div>
+      <div class="row" style="margin-top:8px">
+        <div class="field">
+          <label for="run-conc">Trials in flight</label>
+          <input type="number" id="run-conc" min="1" max="32" value="${esc(d.n_concurrent ?? 2)}">
+        </div>
+        <div class="field">
+          <label for="run-agents">Generating at once</label>
+          <input type="number" id="run-agents" min="1" max="32" value="${esc(d.n_concurrent_agents ?? 1)}">
+        </div>
+      </div>
+      <div class="field hint" style="margin-top:6px">
+        Keep “generating at once” at your server's slot count, or requests queue and
+        the penalty lands hardest on whichever harness makes more calls &mdash; the
+        variable under test.
+      </div>
+      <div class="note warn" id="run-conc-warn" style="display:none;margin-top:6px"></div>
+      <div class="check" style="margin-top:10px">
+        <input type="checkbox" id="run-allow-hosts">
+        <div>
+          <label for="run-allow-hosts">Send the egress allowlist</label>
+          <div class="hint">Only for datasets that restrict network access during the
+            agent phase. Terminal-Bench 2 does not.</div>
+        </div>
+      </div>
+      ${(() => {
+        // This page is re-read from disk on every request; the server process is
+        // not. A dashboard left running across an upgrade would render this box,
+        // send the flag, and have it silently ignored -- which is exactly how a
+        // run gets started believing it is recording evidence that it is not.
+        const supported = can("debug_capture");
+        return `
+      <div class="check" style="margin-top:10px">
+        <input type="checkbox" id="run-debug" ${cp.debugCapture && supported ? "checked" : ""}
+               ${supported ? "" : "disabled"}>
+        <div>
+          <label for="run-debug">Capture diagnostics</label>
+          <div class="hint">Samples the endpoint every 10s for the life of the run,
+            writing <code>endpoint-health.jsonl</code> beside the trials, and asks
+            harnesses for connection-level logs where they support it. Read-only and
+            takes no generation slot &mdash; but without it, a trial that dies on a
+            transport error cannot be attributed afterwards, and "the endpoint
+            dropped" becomes an assumption rather than a finding.</div>
+          ${supported ? "" : `<div class="note warn" style="margin-top:6px">
+            The running dashboard predates this option and would ignore it.
+            <b>Restart the dashboard</b>, then start the run &mdash; otherwise it
+            records nothing and the failures stay unattributable.</div>`}
+        </div>
+      </div>`;
+      })()}
+      <div class="btn-row">
+        <button class="btn primary" id="btn-start" ${active || cp.busy || !ids.length ? "disabled" : ""}>Start benchmark</button>
+        <button class="btn" id="btn-dry" ${active || cp.busy ? "disabled" : ""}>Preview command</button>
+        ${active ? `<span style="color:var(--ink-muted);font-size:11px">stop the current run to start another</span>` : ""}
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Live output <span class="sub">${cp.log.length} lines</span></h2>
+    ${bar}
+    <div class="card-body">
+      <div class="console" id="run-console">${renderLogLines()}</div>
+    </div>
+  </div>`;
+}
+
+function renderLogLines() {
+  return cp.log.map((line) => {
+    let cls = "";
+    if (/^={6,}/.test(line) || /^\s{2}\$ /.test(line)) cls = "rule";
+    else if (/\[!\]|error|failed|traceback/i.test(line)) cls = "bad";
+    else if (/warn/i.test(line)) cls = "warn";
+    return `<span class="ln ${cls}">${esc(line)}</span>`;
+  }).join("");
+}
+
+/* Whether the *running* server can honour a control, not whether this page
+   knows how to draw it. An older server omits the list entirely, which is the
+   honest answer for every capability. */
+function can(name) {
+  const caps = (cp.server || {}).capabilities;
+  return Array.isArray(caps) && caps.includes(name);
+}
+
+function runSpecFromForm() {
+  const picked = Array.from(document.querySelectorAll("[data-harness-pick]"))
+    .filter((el) => el.checked)
+    .map((el) => el.getAttribute("data-harness-pick"));
+  const spec = {
+    harnesses: picked,
+    subset: val("run-subset") || null,
+    agent_timeout_multiplier: num("run-mult"),
+    n_concurrent: num("run-conc"),
+    n_concurrent_agents: num("run-agents"),
+    allow_hosts: checked("run-allow-hosts"),
+    debug_capture: checked("run-debug"),
+  };
+  // Sticky across the re-render, so the box does not silently clear itself
+  // between reading the hint and pressing start.
+  cp.debugCapture = spec.debug_capture;
+  const n = num("run-ntasks");
+  if (n) spec.n_tasks = n;
+  return spec;
+}
+
+/* The endpoint's real slot count is only known once it has been probed, which
+   happens when the run starts -- the runner defaults "generating at once" to it
+   and warns on the console. This is the cheap client-side half: the provider's
+   own default, which for a self-hosted endpoint is one slot. Advisory only. */
+function syncConcurrencyWarning() {
+  const box = $("#run-conc-warn");
+  if (!box) return;
+  const provider = ((cp.server || {}).config || {}).endpoint || {};
+  const known = ((cp.server || {}).providers || [])
+    .find((p) => p.id === provider.provider);
+  const cap = known ? known.default_agent_concurrency : null;
+  const agents = num("run-agents");
+  const show = cap != null && agents != null && agents > cap;
+  box.style.display = show ? "" : "none";
+  if (show) {
+    box.textContent =
+      `${agents} agents will generate at once, but a ${known.label} typically `
+      + `serves ${cap}. Past the slot count requests queue at the server, and `
+      + `the wait is charged to whichever harness makes more calls — the thing `
+      + `you are trying to measure. The exact slot count is checked against `
+      + `your endpoint when the run starts.`;
+  }
+}
+
+function wireRun() {
+  const agents = $("#run-agents");
+  if (agents) {
+    agents.oninput = syncConcurrencyWarning;
+    syncConcurrencyWarning();
+  }
+
+  const start = $("#btn-start");
+  if (start) start.onclick = () => {
+    const spec = runSpecFromForm();
+    const scope = spec.subset ? `subset “${spec.subset}”`
+      : spec.n_tasks ? `the first ${spec.n_tasks} task(s)`
+      : "the full 89-task dataset";
+    const who = spec.harnesses.length ? spec.harnesses.join(", ") : "every harness";
+    if (!confirm(
+      `Start a benchmark?\n\n  ${who}\n  ${scope}\n  timeout multiplier ${spec.agent_timeout_multiplier}\n\n`
+      + `This runs Docker containers and can take many hours.`)) return;
+    cp.log = [];
+    act("run", "start", () => api("/api/run", { method: "POST", body: spec }),
+        "Benchmark started.");
+  };
+
+  const dry = $("#btn-dry");
+  if (dry) dry.onclick = () => {
+    cp.log = [];
+    act("run", "dry", () => api("/api/run", {
+      method: "POST", body: { ...runSpecFromForm(), dry_run: true },
+    }), "Preview: the command is shown below, nothing was executed.");
+  };
+
+  const stop = $("#btn-stop");
+  if (stop) stop.onclick = () => {
+    if (!confirm(
+      "Stop the running benchmark?\n\n"
+      + "Completed trials keep their results and the run is marked stopped. "
+      + "The trial in flight is lost, and its task container is removed.")) return;
+    act("run", "stop", () => api("/api/run/stop", { method: "POST", body: {} }),
+      (r) => {
+        // Say how many containers were removed. Killing the process does not
+        // stop them, so this is the part a user cannot otherwise verify
+        // without going to Docker themselves.
+        const n = (r.containers_removed || []).length;
+        return n
+          ? `Stopped. Removed ${n} task container${n === 1 ? "" : "s"}.`
+          : "Stopped. No task containers were left running.";
+      });
+  };
+
+  const box = $("#run-console");
+  if (box) {
+    box.scrollTop = cp.logPinned ? box.scrollHeight : box.scrollTop;
+    box.onscroll = () => {
+      cp.logPinned = box.scrollTop + box.clientHeight >= box.scrollHeight - 24;
+    };
+  }
+}
+
+/* Update the console and status bar without touching form inputs. */
+async function pollRun() {
+  if (cp.tab !== "run") return;
+  try {
+    const data = await api("/api/run/log?limit=600");
+    cp.log = data.lines || [];
+    const was = cp.server ? JSON.stringify(cp.server.supervisor) : null;
+    if (cp.server) cp.server.supervisor = data.supervisor;
+    const box = $("#run-console");
+    if (box) {
+      box.innerHTML = renderLogLines();
+      if (cp.logPinned) box.scrollTop = box.scrollHeight;
+    }
+    // A status change alters which buttons exist, so that needs a real render.
+    if (was !== JSON.stringify(data.supervisor)) {
+      await refreshServerState();
+      renderTab("run");
+    }
+  } catch (_) { /* transient */ }
+}
+
+/* ------------------------------- Harnesses ------------------------------ */
+
+function renderHarnesses() {
+  const s = cp.server;
+  if (!s) return `<div class="empty">Loading&hellip;</div>`;
+  const entries = Object.entries(s.harnesses || {});
+  const d = s.defaults || {};
+
+  const editor = cp.editing != null ? renderHarnessEditor(s) : "";
+
+  return `
+  ${noticeHtml("harnesses")}
+  <div class="card">
+    <h2>Harness catalog
+      <span class="sub">harnesses/registry.yaml &mdash; committed, so never put a key here</span></h2>
+    <div class="card-body">
+      <p>The extension point. A harness needs a Harbor built-in agent name, or
+         <code>module.path:ClassName</code> for an adapter in <code>harnesses/</code>.</p>
+      <div class="itemlist">
+        ${entries.map(([id, spec]) => `
+          <div class="item">
+            <div class="item-head">
+              <span class="name">${esc(spec.label || id)}</span>
+              <span class="meta">${esc(id)}${spec.vendor ? " · " + esc(spec.vendor) : ""}</span>
+              <span class="spacer"></span>
+              <button class="btn" data-edit-harness="${esc(id)}" ${cp.busy ? "disabled" : ""}>Edit</button>
+              <button class="btn danger" data-del-harness="${esc(id)}" ${cp.busy ? "disabled" : ""}>Delete</button>
+            </div>
+            <dl>
+              <dt>agent</dt><dd>${esc(spec.agent || "")}</dd>
+              <dt>model ref</dt><dd>${esc(spec.model_ref || "")}</dd>
+              ${spec.repo ? `<dt>repo</dt><dd>${esc(spec.repo)}</dd>` : ""}
+              ${spec.agent_kwargs ? `<dt>kwargs</dt><dd>${esc(JSON.stringify(spec.agent_kwargs))}</dd>` : ""}
+              ${spec.agent_env ? `<dt>env</dt><dd>${esc(JSON.stringify(spec.agent_env))}</dd>` : ""}
+            </dl>
+          </div>`).join("") || `<div class="note warn">No harnesses defined.</div>`}
+      </div>
+      <div class="btn-row">
+        <button class="btn primary" id="btn-add-harness" ${cp.busy ? "disabled" : ""}>Add a harness</button>
+      </div>
+    </div>
+  </div>
+  ${editor}
+
+  <div class="card">
+    <h2>Run defaults</h2>
+    <div class="card-body">
+      <p class="why">These change what a run <em>measures</em>, so they are bounded.
+        Runs made at different timeout multipliers are not comparable and the
+        dashboard will not pair them.</p>
+      <div class="row">
+        <div class="field"><label for="def-mult">Timeout multiplier</label>
+          <input type="number" id="def-mult" step="0.5" min="0.1" max="100"
+                 value="${esc(d.agent_timeout_multiplier ?? 16)}"></div>
+        <div class="field"><label for="def-conc">Trials in flight</label>
+          <input type="number" id="def-conc" min="1" max="32" value="${esc(d.n_concurrent ?? 2)}"></div>
+        <div class="field"><label for="def-agents">Generating at once</label>
+          <input type="number" id="def-agents" min="1" max="32" value="${esc(d.n_concurrent_agents ?? 1)}"></div>
+        <div class="field"><label for="def-attempts">Attempts per task</label>
+          <input type="number" id="def-attempts" min="1" max="10" value="${esc(d.n_attempts ?? 1)}"></div>
+        <div class="field"><label for="def-envbuild">Env build multiplier</label>
+          <input type="number" id="def-envbuild" step="0.5" min="1" max="50"
+                 value="${esc(d.environment_build_timeout_multiplier ?? 4)}"></div>
+      </div>
+      <div class="btn-row">
+        <button class="btn primary" id="btn-save-defaults" ${cp.busy ? "disabled" : ""}>Save defaults</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+function renderHarnessEditor(s) {
+  const isNew = cp.editing === "+";
+  const id = isNew ? "" : cp.editing;
+  const spec = isNew ? {} : (s.harnesses[id] || {});
+  const j = (o) => (o && Object.keys(o).length ? JSON.stringify(o, null, 2) : "");
+  return `
+  <div class="card">
+    <h2>${isNew ? "New harness" : "Edit " + esc(id)}</h2>
+    <div class="card-body">
+      <div class="cols">
+        <div>
+          <div class="field">
+            <label for="hz-id">Id</label>
+            <input type="text" id="hz-id" value="${esc(id)}" ${isNew ? "" : "disabled"}
+                   placeholder="lowercase, e.g. mycli">
+            <div class="hint">Becomes part of run directory names.</div>
+          </div>
+          <div class="field">
+            <label for="hz-label">Label</label>
+            <input type="text" id="hz-label" value="${esc(spec.label || "")}" placeholder="My Harness">
+          </div>
+          <div class="field">
+            <label for="hz-agent">Agent</label>
+            <input type="text" id="hz-agent" value="${esc(spec.agent || "")}"
+                   placeholder="harnesses.mycli:MyCli">
+            <div class="hint">A Harbor built-in name, or <code>module:Class</code>.</div>
+          </div>
+          <div class="field">
+            <label for="hz-model-ref">Model ref</label>
+            <input type="text" id="hz-model-ref" value="${esc(spec.model_ref || "local/{model_id}")}">
+          </div>
+        </div>
+        <div>
+          <div class="field">
+            <label for="hz-vendor">Vendor</label>
+            <input type="text" id="hz-vendor" value="${esc(spec.vendor || "")}">
+          </div>
+          <div class="field">
+            <label for="hz-repo">Repo URL</label>
+            <input type="text" id="hz-repo" value="${esc(spec.repo || "")}">
+          </div>
+          <div class="field">
+            <label for="hz-kwargs">agent_kwargs (JSON)</label>
+            <textarea id="hz-kwargs" spellcheck="false"
+                      placeholder='{"base_url": "{base_url}", "api_key": "{api_key}"}'>${esc(j(spec.agent_kwargs))}</textarea>
+            <div class="hint">Placeholders: <code>{model_id} {base_url} {host} {n_ctx}
+              {max_tokens} {label} {api_key}</code>. Never a literal key &mdash; this
+              file is committed and the server will refuse it.</div>
+          </div>
+          <div class="field">
+            <label for="hz-env">agent_env (JSON)</label>
+            <textarea id="hz-env" spellcheck="false" placeholder='{"SOME_FLAG": "1"}'>${esc(j(spec.agent_env))}</textarea>
+          </div>
+        </div>
+      </div>
+      <div class="btn-row">
+        <button class="btn primary" id="btn-save-harness" ${cp.busy ? "disabled" : ""}>Save harness</button>
+        <button class="btn" id="btn-cancel-harness">Cancel</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+function wireHarnesses() {
+  document.querySelectorAll("[data-edit-harness]").forEach((b) => {
+    b.onclick = () => { cp.editing = b.getAttribute("data-edit-harness"); renderTab("harnesses"); };
+  });
+  document.querySelectorAll("[data-del-harness]").forEach((b) => {
+    b.onclick = () => {
+      const id = b.getAttribute("data-del-harness");
+      if (!confirm(`Delete harness “${id}”?\n\nExisting runs keep their results. `
+        + `registry.yaml is backed up to registry.yaml.bak.`)) return;
+      act("harnesses", "del", () => api("/api/harness/" + encodeURIComponent(id),
+        { method: "DELETE", body: {} }), `Deleted ${id}.`);
+    };
+  });
+
+  const add = $("#btn-add-harness");
+  if (add) add.onclick = () => { cp.editing = "+"; renderTab("harnesses"); };
+
+  const cancel = $("#btn-cancel-harness");
+  if (cancel) cancel.onclick = () => { cp.editing = null; renderTab("harnesses"); };
+
+  const save = $("#btn-save-harness");
+  if (save) save.onclick = () => {
+    let kwargs, env;
+    try {
+      kwargs = val("hz-kwargs") ? JSON.parse(val("hz-kwargs")) : undefined;
+      env = val("hz-env") ? JSON.parse(val("hz-env")) : undefined;
+    } catch (err) {
+      notice("harnesses", "bad", "agent_kwargs / agent_env must be valid JSON: " + err.message);
+      renderTab("harnesses");
+      return;
+    }
+    const id = cp.editing === "+" ? val("hz-id") : cp.editing;
+    const spec = {
+      label: val("hz-label"), agent: val("hz-agent"),
+      model_ref: val("hz-model-ref"), vendor: val("hz-vendor"), repo: val("hz-repo"),
+    };
+    if (kwargs) spec.agent_kwargs = kwargs;
+    if (env) spec.agent_env = env;
+    act("harnesses", "save", async () => {
+      const r = await api("/api/harness", { method: "POST", body: { id, spec } });
+      cp.editing = null;
+      return r;
+    }, `Saved ${id}.`);
+  };
+
+  const defs = $("#btn-save-defaults");
+  if (defs) defs.onclick = () => act("harnesses", "defaults", () =>
+    api("/api/defaults", { method: "POST", body: {
+      agent_timeout_multiplier: num("def-mult"),
+      n_concurrent: num("def-conc"),
+      n_concurrent_agents: num("def-agents"),
+      n_attempts: num("def-attempts"),
+      environment_build_timeout_multiplier: num("def-envbuild"),
+    }}), "Defaults saved.");
+}
+
+/* ------------------------------ Maintenance ----------------------------- */
+
+/* Leftover containers and networks, once they have been asked for.
+
+   Both are invisible until they bite, and they bite differently: containers
+   hold multiple GB and keep generating against the endpoint, networks cost
+   nothing until the subnet pool runs dry and then every task dies with a
+   compose error that never says the word "subnet". So the pool line is shown
+   whenever it is tight, even with nothing reclaimable. */
+function renderOrphans() {
+  const o = cp.orphans;
+  if (!o) return "";
+  const containers = (o.orphaned || []).length;
+  const networks = (o.orphaned_networks || []).length;
+  const pool = o.network_pool || {};
+
+  // Orphanhood is not readable from a container's name: during a run these are
+  // the run's own trials. Calling them leftovers next to a Remove button is how
+  // someone kills their own benchmark, so while a run is active they are
+  // reported as what they are.
+  if (o.run_active) {
+    return `<div class="note info" style="margin-top:7px">
+      A benchmark is running. ${containers ? `<b>${containers}</b>` : "Its"} task
+      container(s) belong to it, not to a previous run &mdash; removing them now
+      would kill its trials. Check again once it finishes.</div>`;
+  }
+  // An older server reports containers only; saying "0 networks" there would
+  // be a claim it never made.
+  const knowsNetworks = can("orphan_counts") && o.orphaned_networks !== undefined;
+
+  if (!containers && !networks && !pool.tight) {
+    return `<div class="note ok" style="margin-top:7px">Nothing left over.${
+      knowsNetworks && pool.capacity
+        ? ` ${int(pool.n_bridge_networks)} of ~${int(pool.capacity)} bridge networks in use.`
+        : ""
+    }</div>`;
+  }
+  const parts = [];
+  if (containers) parts.push(`<b>${containers}</b> orphaned container(s)`);
+  if (knowsNetworks && networks) parts.push(`<b>${networks}</b> orphaned network(s)`);
+  return `<div class="note ${pool.tight ? "bad" : "warn"}" style="margin-top:7px">
+    ${parts.join(" and ") || "Nothing reclaimable"}.
+    ${knowsNetworks && pool.capacity
+      ? `${int(pool.n_bridge_networks)} of ~${int(pool.capacity)} bridge networks in use.`
+      : ""}
+    ${pool.tight
+      ? `<br><b>The subnet pool is nearly exhausted.</b> A run started now will
+         fail with compose errors that never mention subnets. Reap before starting.`
+      : ""}
+  </div>`;
+}
+
+function renderMaintenance() {
+  const s = cp.server;
+  if (!s) return `<div class="empty">Loading&hellip;</div>`;
+  const runs = (state.data && state.data.runs) || [];
+  const active = s.supervisor.active;
+
+  const doctor = cp.doctor ? `
+    <ul class="checklist">
+      ${cp.doctor.checks.map((c) => `
+        <li><span class="mark ${c.ok ? "ok" : "no"}">${c.ok ? "✓" : "✕"}</span>
+          <span class="what">${esc(c.name)}</span>
+          <span class="detail">${esc(c.detail)}</span></li>`).join("")}
+    </ul>` : `<p>Checks configuration, Harbor, the Docker daemon, disk headroom and
+       whether the endpoint answers.</p>`;
+
+  return `
+  ${noticeHtml("maintenance")}
+  <div class="card">
+    <h2>This instance <span class="sub">which files are actually in play</span></h2>
+    <div class="card-body">
+      <p class="why">An editable install pins an absolute path at install time, so
+        launching from a second clone can silently serve the first one's runs —
+        <code>cd</code> does not change how Python resolves imports. These are the
+        paths this page is really reading and writing.</p>
+      <div class="item">
+        <dl>
+          <dt>code</dt><dd>${esc(s.code_root || "—")}</dd>
+          <dt>config</dt><dd>${esc(s.config_path || "—")}${s.config_exists ? "" : "  (not created yet — using defaults)"}</dd>
+          <dt>runs</dt><dd>${esc(s.runs_dir || "—")}</dd>
+        </dl>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Health check</h2>
+    <div class="card-body">
+      ${doctor}
+      <div class="btn-row">
+        <button class="btn primary" id="btn-doctor" ${cp.busy ? "disabled" : ""}>Run checks</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Task images</h2>
+    <div class="card-body">
+      <p>Cache every task image before your first benchmark. Harbor otherwise pulls
+         each one <em>inside</em> that trial's environment-start budget, and a cold
+         multi-GB pull can lose the task outright rather than scoring it.
+         Total is roughly 60&nbsp;GB.</p>
+      <div class="row">
+        <div class="field" style="max-width:260px">
+          <label for="pre-subset">Subset</label>
+          <select id="pre-subset">
+            ${(s.subsets || []).map((n) => `<option value="${esc(n)}">${esc(n)}</option>`).join("")}
+            <option value="">full dataset</option>
+          </select>
+        </div>
+      </div>
+      <div class="btn-row">
+        <button class="btn primary" id="btn-prepull" ${active || cp.busy ? "disabled" : ""}>Pre-pull images</button>
+        ${active ? `<span style="color:var(--ink-muted);font-size:11px">something is already running</span>` : ""}
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Runs on disk <span class="sub">${runs.length} run(s) · ${esc(s.runs_dir)}</span></h2>
+    <div class="card-body">
+      <p>Run output is large and regenerable. Deleting one removes its trial logs,
+         trajectories and results permanently.</p>
+      <div class="itemlist">
+        ${runs.map((r) => `
+          <div class="item">
+            <div class="item-head">
+              <span class="name">${esc(r.harness_label)}</span>
+              <span class="meta">${esc(r.model_label)} · ${r.n_done}/${r.n_total} ·
+                ${esc(r.status)} · ${esc(shortTime(r.started_at))}</span>
+              <span class="spacer"></span>
+              <button class="btn danger" data-del-run="${esc(r.run_id)}"
+                ${active || cp.busy ? "disabled" : ""}>Delete</button>
+            </div>
+          </div>`).join("") || `<div class="note info">No runs yet.</div>`}
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Snapshot and cleanup</h2>
+    <div class="card-body">
+      <p>A snapshot is a standalone HTML file with the results inlined &mdash; it works
+         offline with no server, and carries no control plane. It embeds run
+         manifests, so look at what is in one before publishing it.</p>
+      <div class="btn-row">
+        <button class="btn" id="btn-export" ${cp.busy ? "disabled" : ""}>Export snapshot</button>
+        <button class="btn" id="btn-orphans" ${cp.busy ? "disabled" : ""}>Check for leftovers</button>
+        <button class="btn danger" id="btn-reap"
+          ${active || cp.busy || (cp.orphans && cp.orphans.run_active) ? "disabled" : ""}
+          title="${active || (cp.orphans && cp.orphans.run_active)
+            ? "A benchmark is running — this would kill its trials" : ""}"
+        >Remove orphaned ${
+          can("network_reaping") ? "containers and networks" : "containers"
+        }</button>
+      </div>
+      ${renderOrphans()}
+      <div class="hint" style="margin-top:7px">A hard-killed run can leave task
+        containers running &mdash; one was observed still up six hours later, holding
+        multiple GB. Each trial also creates a compose network, and those outlive
+        the containers; the pool holds 32, so they run out long before disk does.</div>
+    </div>
+  </div>`;
+}
+
+function wireMaintenance() {
+  const doc = $("#btn-doctor");
+  if (doc) doc.onclick = () => act("maintenance", "doctor", async () => {
+    cp.doctor = await api("/api/doctor");
+    return cp.doctor;
+  }, (r) => r.ok ? "All checks passed." : "Some checks failed — see below.");
+
+  const orph = $("#btn-orphans");
+  if (orph) orph.onclick = () => act("maintenance", "orphans", async () => {
+    cp.orphans = await api("/api/containers");
+    return cp.orphans;
+  }, (r) => {
+    const c = (r.orphaned || []).length, n = (r.orphaned_networks || []).length;
+    return c || n ? "Found leftovers — see below." : "Nothing left over.";
+  });
+
+  const pre = $("#btn-prepull");
+  if (pre) pre.onclick = () => {
+    if (!confirm("Pre-pull task images?\n\nThis downloads tens of GB and can take a "
+      + "long time. Progress appears on the Run tab.")) return;
+    cp.log = [];
+    act("maintenance", "prepull", () => api("/api/prepull", {
+      method: "POST", body: { subset: val("pre-subset") || null },
+    }), "Pre-pull started — watch progress on the Run tab.");
+  };
+
+  document.querySelectorAll("[data-del-run]").forEach((b) => {
+    b.onclick = () => {
+      const id = b.getAttribute("data-del-run");
+      if (!confirm(`Delete run “${id}”?\n\nIts trial logs, trajectories and results `
+        + `are removed permanently. This cannot be undone.`)) return;
+      act("maintenance", "delrun", () =>
+        api("/api/runs/" + encodeURIComponent(id), { method: "DELETE", body: {} }),
+        (r) => `Deleted ${id} (${(r.freed_bytes / 1e6).toFixed(0)} MB freed).`);
+    };
+  });
+
+  const exp = $("#btn-export");
+  if (exp) exp.onclick = () => act("maintenance", "export", () =>
+    api("/api/export", { method: "POST", body: {} }),
+    (r) => `Wrote ${r.wrote} (${(r.bytes / 1024).toFixed(0)} KB).`);
+
+  const reap = $("#btn-reap");
+  if (reap) reap.onclick = () => {
+    if (!confirm(`Force-remove orphaned Harbor task ${
+      can("network_reaping") ? "containers and networks" : "containers"}?\n\n`
+      + "Do not do this while a benchmark is running — it would kill its trials.")) return;
+    act("maintenance", "reap", async () => {
+      const r = await api("/api/containers/reap", { method: "POST", body: {} });
+      // Re-read rather than assume: the panel above must not keep asserting
+      // leftovers that were just removed, and a failed removal still shows.
+      try { cp.orphans = await api("/api/containers"); } catch { cp.orphans = null; }
+      return r;
+    },
+      (r) => {
+        // The endpoint reaps both, and networks are the scarcer resource, so
+        // reporting only containers made a successful reap look like a no-op.
+        const nets = (r.networks && r.networks.removed || []).length;
+        if (!r.removed.length && !nets) return "Nothing orphaned to remove.";
+        const parts = [];
+        if (r.removed.length) parts.push(`${r.removed.length} container(s)`);
+        if (nets) parts.push(`${nets} network(s)`);
+        return `Removed ${parts.join(" and ")}.`;
+      });
+  };
+}
+
+/* -------------------------------- tabs ---------------------------------- */
+
+const TABS = {
+  run: { pane: "pane-run", render: renderRun, wire: wireRun },
+  setup: { pane: "pane-setup", render: renderSetup, wire: wireSetup },
+  harnesses: { pane: "pane-harnesses", render: renderHarnesses, wire: wireHarnesses },
+  maintenance: { pane: "pane-maintenance", render: renderMaintenance, wire: wireMaintenance },
+};
+
+function renderTab(name) {
+  if (name === "results") { render(); return; }
+  const tab = TABS[name];
+  if (!tab) return;
+  const pane = $("#" + tab.pane);
+  if (!pane) return;
+  pane.innerHTML = (READONLY
+    ? `<div class="readonly-banner">This is an exported snapshot. It has no server
+       behind it, so configuring and running are unavailable.</div>`
+    : "") + tab.render();
+  if (!READONLY) tab.wire();
+}
+
+async function selectTab(name) {
+  cp.tab = name;
+  document.querySelectorAll("#tabs button").forEach((b) => {
+    b.setAttribute("aria-selected", String(b.getAttribute("data-tab") === name));
+  });
+  Object.keys(TABS).forEach((k) => {
+    $("#" + TABS[k].pane).classList.toggle("on", k === name);
+  });
+  $("#pane-results").classList.toggle("on", name === "results");
+  document.body.style.overflow = name === "results" ? "" : "auto";
+
+  if (name !== "results" && !READONLY) {
+    if (!cp.server) await refreshServerState();
+    renderTab(name);
+    if (name === "run") pollRun();
+  }
+}
+
+document.querySelectorAll("#tabs button").forEach((b) => {
+  b.onclick = () => selectTab(b.getAttribute("data-tab"));
+});
+
+/* A run in flight is worth seeing from any tab. */
+function updateRunFlag() {
+  const flag = $("#run-flag");
+  if (!flag) return;
+  const job = cp.server && cp.server.supervisor && cp.server.supervisor.job;
+  const active = cp.server && cp.server.supervisor && cp.server.supervisor.active;
+  flag.classList.toggle("hidden", !job);
+  flag.classList.toggle("live", !!active);
+  flag.textContent = job ? (active ? (job.kind === "prepull" ? "pulling" : "running") : job.status) : "";
+}
+
+/* -------------------------------- poll ---------------------------------- */
+
+function setLive(on, text) {
+  const el = $("#live");
+  el.classList.toggle("on", !!on);
+  $("#live-text").textContent = text;
+}
+
+async function poll() {
+  const app = $("#app");
+  // Hold the previous render rather than flashing a skeleton -- but only mark
+  // it stale if the scan is actually slow. Dimming on every 5s tick would
+  // strobe the whole page for a fetch that normally takes milliseconds.
+  const slow = setTimeout(() => app.classList.add("stale"), 400);
+  try {
+    const [res, act] = await Promise.all([
+      fetch("/api/results", { cache: "no-store" }),
+      // The feed is a nicety; a failure here must not blank the whole page.
+      fetch("/api/activity", { cache: "no-store" }).catch(() => null),
+    ]);
+    if (!res.ok) throw new Error(res.status);
+    state.data = await res.json();
+    state.activity = act && act.ok ? await act.json() : null;
+    const running = state.data.summary.n_running;
+    setLive(running > 0, running > 0 ? `${running} run${running === 1 ? "" : "s"} in flight` : "idle");
+    // Only the visible tab is re-rendered. Repainting a form tab on this tick
+    // would discard whatever the user was part-way through typing.
+    if (cp.tab === "results") render();
+  } catch (err) {
+    setLive(false, "server unreachable");
+  } finally {
+    clearTimeout(slow);
+    app.classList.remove("stale");
+  }
+}
+
+/* Supervisor state is cheap and drives the tab badge, so it is tracked from
+   every tab -- a benchmark you started should be visible wherever you are. */
+async function pollSupervisor() {
+  if (READONLY) return;
+  const before = cp.server && cp.server.supervisor
+    ? JSON.stringify(cp.server.supervisor) : null;
+  await refreshServerState();
+  updateRunFlag();
+  const after = cp.server && cp.server.supervisor
+    ? JSON.stringify(cp.server.supervisor) : null;
+  // Re-render the maintenance tab when a job ends: its buttons are gated on
+  // whether anything is running.
+  if (before !== after && cp.tab === "maintenance") renderTab("maintenance");
+}
+
+if (window.__HARNESS_BENCH_SNAPSHOT__) {
+  // Exported snapshot: data is inlined, there is no server to poll and no
+  // control plane to offer, so the tabs that write are removed entirely.
+  state.data = window.__HARNESS_BENCH_SNAPSHOT__;
+  setLive(false, "snapshot");
+  document.querySelectorAll("#tabs button").forEach((b) => {
+    if (b.getAttribute("data-tab") !== "results") b.remove();
+  });
+  render();
+} else {
+  poll();
+  setInterval(poll, POLL_MS);
+  if (!READONLY) {
+    pollSupervisor();
+    setInterval(pollSupervisor, POLL_MS);
+    // The console tails faster than the results scan: it is the only feedback
+    // that a run which prints nothing for minutes is still alive.
+    setInterval(pollRun, 2000);
+  } else {
+    document.querySelectorAll("#tabs button").forEach((b) => {
+      if (b.getAttribute("data-tab") !== "results") b.remove();
+    });
+  }
+}
+
+</script>
+</body>
+</html>

@@ -1,0 +1,71 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "harness-bench"
+version = "0.1.0"
+description = "Benchmark agent harnesses against one model, on Terminal-Bench 2."
+authors = [{ name = "Dan August" }]
+maintainers = [{ name = "Dan August" }]
+readme = "README.md"
+requires-python = ">=3.12"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+keywords = ["benchmark", "agents", "terminal-bench", "llm", "evaluation"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "Intended Audience :: Science/Research",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+  "Operating System :: OS Independent",
+]
+
+dependencies = [
+  # Harbor is the measuring instrument and is pinned on purpose: an upgrade can
+  # change agent defaults or reward handling underneath a running experiment.
+  # Every run records the version it used, so bumping this is safe as long as
+  # you re-run the comparisons you care about.
+  "harbor==0.20.0",
+  "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+# The test suites need nothing beyond the runtime deps; this exists for linting
+# and release work.
+dev = [
+  "ruff>=0.6",
+]
+
+[project.urls]
+Homepage = "https://github.com/danaug23/harness-bench"
+Issues = "https://github.com/danaug23/harness-bench/issues"
+
+[project.scripts]
+harness-bench = "bench.cli:main"
+
+[tool.setuptools]
+# `harnesses` holds the adapter classes Harbor imports by dotted path, and
+# `dashboard` ships index.html, so both are part of the distribution.
+packages = ["bench", "harnesses", "dashboard"]
+
+[tool.setuptools.package-data]
+dashboard = ["index.html"]
+bench = ["subsets/*.txt"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.ruff.lint.per-file-ignores]
+# The install steps embed shell one-liners that detect the container's package
+# manager. Wrapping them to fit a column limit makes the shell harder to read
+# than the long line does, and these are executed verbatim inside a task image.
+"harnesses/omp.py" = ["E501"]
+"harnesses/opencode.py" = ["E501"]
+"harnesses/minion.py" = ["E501"]

@@ -1,0 +1,117 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: tests (${{ matrix.os }}, py${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # The rig orchestrates from the host and runs tasks in Linux
+        # containers, so the orchestrator itself has to work on both.
+        os: [ubuntu-latest, windows-latest]
+        python: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install
+        run: python -m pip install --upgrade pip && pip install -e .
+
+      - name: Config and secret handling
+        run: python tests/test_config.py
+
+      - name: Control-plane auth, validation and redaction
+        run: python tests/test_api.py
+
+      - name: Supervisor guards and stop semantics
+        run: python tests/test_supervisor.py
+
+      - name: Comparison rules and statistics
+        run: python tests/test_collect.py
+
+      - name: Adapter parsers and generated configs
+        run: python tests/test_tokens.py
+
+      - name: Local-endpoint routing for the vendor CLIs
+        run: python tests/test_local_agents.py
+
+      - name: Dashboard render paths
+        run: node tests/test_dashboard.mjs
+
+      - name: CLI is wired up
+        run: |
+          harness-bench --help
+          harness-bench --version
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install ruff
+      - run: ruff check .
+
+  secrets:
+    name: secret scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # gitleaks needs history to scan commits, not just the tree.
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_CONFIG: .gitleaks.toml
+
+  no-personal-data:
+    name: no machine-specific data
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # This repo was extracted from one person's setup. These patterns are the
+      # ones that leaked before and would leak again: a real endpoint pasted
+      # into a default, a home directory in an example, a private address in a
+      # doc. Documentation-reserved ranges (192.0.2.x, example.invalid) are the
+      # supported way to write an address in this repo.
+      - name: Scan for personal paths and private addresses
+        run: |
+          set -euo pipefail
+          patterns='(/home/[a-z][a-z0-9_-]*/|[A-Z]:\\Users\\[A-Za-z0-9._-]+|\b10\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\b|\b192\.168\.[0-9]{1,3}\.[0-9]{1,3}\b|\b172\.(1[6-9]|2[0-9]|3[01])\.[0-9]{1,3}\.[0-9]{1,3}\b)'
+          if grep -rInE "$patterns" \
+               --exclude-dir=.git \
+               --exclude-dir=runs \
+               --exclude-dir=.github \
+               . ; then
+            echo
+            echo "Found a machine-specific path or private IP address."
+            echo "Use a documentation-reserved value instead:"
+            echo "  addresses  192.0.2.10 (RFC 5737)  or  localhost"
+            echo "  hostnames  example.invalid (RFC 6761)"
+            exit 1
+          fi
+          echo "clean"

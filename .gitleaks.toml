@@ -1,0 +1,34 @@
+# gitleaks configuration for harness-bench.
+#
+# This repo handles API keys, so the secret scan in CI is load-bearing rather
+# than decorative. The only allowlisted values are the deliberately fake
+# credentials in the two tests that prove a key does NOT escape: test_config.py
+# checks it never reaches a run manifest, test_supervisor.py checks the child
+# process is pinned to the configured endpoint. Neither test can be written
+# without a key-shaped string in it.
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "harness-bench-endpoint-key"
+description = "API key assigned inline in a committed file"
+regex = '''(?i)(api_key|apikey|api-key)\s*[:=]\s*["']?(sk-|hf_|gsk_)[A-Za-z0-9_\-]{16,}'''
+[rules.allowlist]
+paths = [
+  '''tests/test_config\.py''',
+  '''tests/test_supervisor\.py''',
+]
+
+[allowlist]
+description = "Fake credentials used by the secret-redaction tests"
+paths = [
+  '''tests/test_config\.py''',
+  '''tests/test_supervisor\.py''',
+]
+regexes = [
+  # The placeholder the scrubber substitutes in. Not a secret by construction.
+  '''\*\*\*redacted\*\*\*''',
+  # Documented example values in config.example.yaml and the README.
+  '''OPENROUTER_API_KEY=\.\.\.''',
+]
