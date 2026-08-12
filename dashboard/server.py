@@ -45,7 +45,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
-from bench import ROOT
+from bench import ROOT, subset_names
 from bench import registry as registry_mod
 from bench.activity import read_activity
 from bench.collect import build_index
@@ -155,12 +155,7 @@ class App:
         except (OSError, registry_mod.RegistryError) as exc:
             catalog = {"harnesses": {}, "defaults": {}, "error": str(exc)}
 
-        subset_dir = ROOT / "bench" / "subsets"
-        subsets = (
-            sorted(p.stem for p in subset_dir.glob("*.txt"))
-            if subset_dir.exists()
-            else []
-        )
+        subsets = subset_names()
 
         return {
             "read_only": self.read_only,

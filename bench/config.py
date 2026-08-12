@@ -39,7 +39,7 @@ from typing import Any
 
 import yaml
 
-from bench import ROOT
+from bench import WORKSPACE
 
 CONFIG_NAME = "config.yaml"
 EXAMPLE_NAME = "config.example.yaml"
@@ -243,7 +243,7 @@ class Config:
 
     def resolved_runs_dir(self) -> Path:
         path = Path(self.runs_dir).expanduser()
-        return path if path.is_absolute() else (ROOT / path)
+        return path if path.is_absolute() else (WORKSPACE / path)
 
     # -- serialization ----------------------------------------------------
 
@@ -290,11 +290,11 @@ class Config:
 
 def config_path() -> Path:
     override = os.environ.get("HARNESS_ARENA_CONFIG")
-    return Path(override).expanduser() if override else (ROOT / CONFIG_NAME)
+    return Path(override).expanduser() if override else (WORKSPACE / CONFIG_NAME)
 
 
 def example_path() -> Path:
-    return ROOT / EXAMPLE_NAME
+    return WORKSPACE / EXAMPLE_NAME
 
 
 def _coerce_bool(value: str) -> bool:

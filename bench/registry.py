@@ -19,7 +19,7 @@ from typing import Any
 
 import yaml
 
-from bench import REGISTRY_PATH
+from bench import USER_REGISTRY_PATH, registry_path
 from bench.config import looks_like_key
 
 #: Harness ids become directory-name components, so keep them boring.
@@ -53,7 +53,7 @@ class RegistryError(ValueError):
 
 
 def load(path: Path | str | None = None) -> dict[str, Any]:
-    target = Path(path) if path else REGISTRY_PATH
+    target = Path(path) if path else registry_path()
     with target.open(encoding="utf-8") as handle:
         data = yaml.safe_load(handle) or {}
     if not isinstance(data, dict):
@@ -70,7 +70,10 @@ def save(data: dict[str, Any], path=None) -> None:
     accumulated result of debugging each upstream's quirks -- worth one cheap
     undo.
     """
-    target = Path(path) if path else REGISTRY_PATH
+    # Writes land on the copy you own. Installed from a wheel that is not the
+    # packaged catalog, which lives in site-packages and is not yours to edit.
+    target = Path(path) if path else USER_REGISTRY_PATH
+    target.parent.mkdir(parents=True, exist_ok=True)
     if target.exists():
         shutil.copy2(target, target.with_suffix(".yaml.bak"))
     header = (

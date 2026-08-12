@@ -26,7 +26,7 @@ from typing import Any
 
 import yaml
 
-from bench import REGISTRY_PATH, ROOT
+from bench import REGISTRY_PATH, ROOT, WORKSPACE, subset_names, subset_path
 from bench.config import DEFAULT_CONTEXT_WINDOW, Config, scrub
 from bench.probe import ModelIdentity, add_endpoint_args, config_from_args, describe, resolve
 from bench.supervisor import clear_run_marker, write_run_marker
@@ -56,7 +56,8 @@ DEBUG_AGENT_ENV = {
 }
 
 
-SUBSET_DIR = ROOT / "bench" / "subsets"
+# Subsets resolve through bench.subset_path: a list you made yourself wins
+# over the packaged one of the same name.
 
 
 def load_registry(path: Path = REGISTRY_PATH) -> dict[str, Any]:
@@ -65,10 +66,10 @@ def load_registry(path: Path = REGISTRY_PATH) -> dict[str, Any]:
 
 
 def load_subset(name: str) -> list[str]:
-    """Read a named task list from bench/subsets/<name>.txt."""
-    path = SUBSET_DIR / f"{name}.txt"
+    """Read a named task list by name, yours if you have one."""
+    path = subset_path(name)
     if not path.exists():
-        available = sorted(p.stem for p in SUBSET_DIR.glob("*.txt"))
+        available = subset_names()
         raise SystemExit(
             f"No subset '{name}' at {path}."
             + (f" Available: {', '.join(available)}" if available else "")
@@ -650,7 +651,7 @@ def run_one(
         print(f"  diagnostics on: sampling the endpoint into {HEALTH_FILENAME}")
 
     try:
-        result = subprocess.run(argv, env=env, cwd=str(ROOT), check=False)
+        result = subprocess.run(argv, env=env, cwd=str(WORKSPACE), check=False)
     finally:
         if watchdog is not None:
             watchdog.stop()

@@ -21,9 +21,11 @@ import re
 from collections import defaultdict
 from pathlib import Path
 
-from bench import ROOT
+from bench import USER_SUBSET_DIR
 
-SUBSET_DIR = ROOT / "bench" / "subsets"
+# New subsets are written where you can keep them: the checkout when there
+# is one, otherwise your workspace rather than inside site-packages.
+SUBSET_DIR = USER_SUBSET_DIR
 BANDS = ("easy", "medium", "hard")
 
 

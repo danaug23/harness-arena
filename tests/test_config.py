@@ -326,6 +326,33 @@ def test_context_floor_is_refused_up_front() -> None:
     check("no floor declared -> never refused", refused(NO_FLOOR, 4096), False)
 
 
+def test_paths_follow_the_install() -> None:
+    """Where files land depends on how the tool was installed, and it is silent.
+
+    From a checkout everything sits beside the code, which is what the docs
+    describe and where every existing run already is. Installed from a wheel the
+    same constants would point into site-packages: runs written somewhere the
+    next `pip install` may replace, and a catalog edit attempting to write into
+    a directory that is often read-only. The split is easy to undo by accident,
+    since a checkout is the only case anyone tests by hand.
+    """
+    import bench
+
+    check("a checkout keeps its data beside the code", bench.WORKSPACE, bench.ROOT)
+    check("...so runs land where they always did",
+          bench.RUNS_DIR, bench.ROOT / "runs")
+    check("...and the label cache does too",
+          bench.MODELS_CACHE_PATH, bench.ROOT / "bench" / "models.json")
+    # The packaged catalog and the one you edit are the same file in a checkout,
+    # which is what makes `registry.yaml` a committed, reviewable artifact here.
+    check("...and the catalog is the committed one",
+          bench.registry_path(), bench.ROOT / "harnesses" / "registry.yaml")
+    check("the packaged catalog ships with the harnesses",
+          bench.PACKAGED_REGISTRY_PATH.exists(), True)
+    check("a packaged subset is discoverable",
+          "stratified-25" in bench.subset_names(), True)
+
+
 if __name__ == "__main__":
     original = dict(os.environ)
     try:
@@ -343,5 +370,6 @@ if __name__ == "__main__":
         os.environ.update(original)
     test_context_window_resolution()
     test_context_floor_is_refused_up_front()
+    test_paths_follow_the_install()
     print("\n" + ("FAILED: " + ", ".join(failures) if failures else "all checks passed"))
     raise SystemExit(1 if failures else 0)

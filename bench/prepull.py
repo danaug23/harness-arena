@@ -20,13 +20,13 @@ import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 
-from bench import ROOT
+from bench import subset_path
 
 # Terminal-Bench 2 publishes one prebuilt image per task under this namespace.
 # Read off the images Harbor itself pulled, e.g. alexgshaw/gpt2-codegolf:20251031.
 DEFAULT_REPO = "alexgshaw"
 DEFAULT_TAG = "20251031"
-SUBSET_DIR = ROOT / "bench" / "subsets"
+
 
 
 def load_tasks(subset: str | None, tasks: list[str] | None) -> list[str]:
@@ -34,7 +34,7 @@ def load_tasks(subset: str | None, tasks: list[str] | None) -> list[str]:
         return tasks
     if not subset:
         raise SystemExit("Pass --subset NAME or --task NAME.")
-    path = SUBSET_DIR / f"{subset}.txt"
+    path = subset_path(subset)
     if not path.exists():
         raise SystemExit(f"No subset at {path}")
     return [
