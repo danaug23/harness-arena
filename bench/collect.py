@@ -516,6 +516,10 @@ def load_run(job_dir: Path) -> dict[str, Any] | None:
         "model_quant": model.get("ftype"),
         "model_params": model.get("n_params"),
         "model_n_ctx": model.get("n_ctx"),
+        # What the server said it would sample with. Absent on runs
+        # recorded before this was captured, and on any endpoint that
+        # does not report it.
+        "model_sampling": model.get("sampling"),
         "dataset": manifest.get("dataset"),
         "n_concurrent": manifest.get("n_concurrent"),
         # The cap that actually matters: how many agents talk to the endpoint at

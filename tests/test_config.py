@@ -353,6 +353,50 @@ def test_paths_follow_the_install() -> None:
           "stratified-25" in bench.subset_names(), True)
 
 
+def test_sampling_is_recorded_when_the_server_reports_it() -> None:
+    """Temperature and the repetition controls change what a run measures.
+
+    The same weights at temperature 1.0 with every penalty off can degenerate
+    into one token repeated to the context limit: it scores zero on every task,
+    and without this the manifest is indistinguishable from a well-behaved run.
+
+    Only llama.cpp reports these. Ollama, OpenRouter and the rest do not serve
+    /props at all, and a missing answer has to stay missing rather than being
+    filled in with a default this rig invented.
+    """
+    from bench.probe import ModelIdentity, _sampling_of, describe
+
+    check("a server that says nothing records nothing", _sampling_of({}), None)
+    check("...including one with props but no params",
+          _sampling_of({"n_ctx": 4096}), None)
+    check("...or a params field of the wrong shape",
+          _sampling_of({"params": "nope"}), None)
+
+    reported = _sampling_of({"params": {"temperature": 0.7, "repeat_penalty": 1.1,
+                                        "top_k": 40, "not_a_sampler": 1}})
+    check("what it does report is kept", reported,
+          {"temperature": 0.7, "top_k": 40, "repeat_penalty": 1.1})
+
+    def described(sampling):
+        return describe(ModelIdentity(
+            served_id="m", fingerprint="f" * 16, label="M",
+            base_url="http://example.invalid/v1", host="example.invalid",
+            n_ctx=4096, sampling=sampling))
+
+    # The combination that produced a repetition loop on a real run.
+    loop = {"temperature": 1.0, "repeat_penalty": 1.0, "dry_multiplier": 0.0,
+            "frequency_penalty": 0.0, "presence_penalty": 0.0}
+    check("an unpenalised high temperature is called out",
+          "[!]" in described(loop), True)
+    check("...and a penalised one is not",
+          "[!]" in described({**loop, "dry_multiplier": 0.8}), False)
+    check("...nor is a cooler one",
+          "[!]" in described({**loop, "temperature": 0.7}), False)
+    # An endpoint that reports nothing must read exactly as it did before.
+    check("a silent endpoint adds no line at all",
+          "sampling" in described(None), False)
+
+
 if __name__ == "__main__":
     original = dict(os.environ)
     try:
@@ -371,5 +415,6 @@ if __name__ == "__main__":
     test_context_window_resolution()
     test_context_floor_is_refused_up_front()
     test_paths_follow_the_install()
+    test_sampling_is_recorded_when_the_server_reports_it()
     print("\n" + ("FAILED: " + ", ".join(failures) if failures else "all checks passed"))
     raise SystemExit(1 if failures else 0)

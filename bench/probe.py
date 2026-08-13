@@ -58,6 +58,9 @@ class ModelIdentity:
     #: Whether the endpoint accepts a real ``reasoning.effort``. None means the
     #: question was never answered -- see supports_reasoning_effort.
     supports_reasoning: bool | None = None
+    #: The server's sampling settings, when it will say. None means it does not
+    #: report them, which is the normal case off llama.cpp -- see _sampling_of.
+    sampling: dict[str, Any] | None = None
     n_ctx_train: int | None = None
     n_params: int | None = None
     size_bytes: int | None = None
@@ -140,6 +143,37 @@ def _suggest_label(served_id: str, model_path: str | None, ftype: str | None) ->
     return stem
 
 
+#: Sampling settings worth recording. Temperature and the repetition controls
+#: change what a run measures as surely as the model does: the same weights at
+#: temperature 1.0 with every repetition penalty off can degenerate into a
+#: single repeated token, score zero on every task, and produce a manifest
+#: indistinguishable from a well-behaved run. Only keys the server actually
+#: reports are kept, so this stays a record of what was served rather than a
+#: list of defaults this rig invented.
+_SAMPLING_KEYS = (
+    "seed", "temperature", "dynatemp_range", "dynatemp_exponent",
+    "top_k", "top_p", "min_p", "typical_p", "top_n_sigma",
+    "repeat_penalty", "repeat_last_n", "frequency_penalty", "presence_penalty",
+    "dry_multiplier", "dry_base", "dry_allowed_length", "dry_penalty_last_n",
+    "xtc_probability", "xtc_threshold",
+    "mirostat", "mirostat_tau", "mirostat_eta",
+)
+
+
+def _sampling_of(default_settings: dict[str, Any]) -> dict[str, Any] | None:
+    """What the server says it will sample with, or None if it does not say.
+
+    llama.cpp reports these under /props. Ollama, OpenRouter and most hosted
+    APIs do not expose them at all, and a missing answer is recorded as missing
+    rather than filled in with a plausible default.
+    """
+    params = default_settings.get("params")
+    if not isinstance(params, dict):
+        return None
+    found = {k: params[k] for k in _SAMPLING_KEYS if k in params}
+    return found or None
+
+
 def _host_of(url: str) -> str:
     return re.sub(r"^https?://", "", url).split("/")[0].split(":")[0]
 
@@ -220,6 +254,7 @@ def _probe_self_hosted(
         model_path=props.get("model_path"),
         build_info=props.get("build_info"),
         total_slots=props.get("total_slots"),
+        sampling=_sampling_of(default_settings),
         raw={"meta": meta, "props_alias": props.get("model_alias")},
     )
 
@@ -657,6 +692,37 @@ def describe(identity: ModelIdentity) -> str:
         lines.append(f"  slots        {identity.total_slots}")
     if identity.build_info:
         lines.append(f"  build        {identity.build_info}")
+    if identity.sampling:
+        shown = ", ".join(
+            f"{key}={identity.sampling[key]}"
+            for key in ("temperature", "top_k", "top_p",
+                        "repeat_penalty", "dry_multiplier")
+            if key in identity.sampling
+        )
+        if shown:
+            lines.append(f"  sampling     {shown}")
+        # Temperature at 1.0 with every repetition control off is how a long
+        # agent trajectory degenerates into a single token repeated to the
+        # context limit. That scores zero on every task and reads as a bad
+        # harness, so it is worth saying before the run rather than after.
+        def _num(key: str, default: float) -> float:
+            try:
+                return float(identity.sampling.get(key, default))
+            except (TypeError, ValueError):
+                return default
+
+        unpenalised = (
+            _num("repeat_penalty", 1.0) <= 1.0
+            and _num("dry_multiplier", 0.0) <= 0.0
+            and _num("frequency_penalty", 0.0) <= 0.0
+            and _num("presence_penalty", 0.0) <= 0.0
+        )
+        if unpenalised and _num("temperature", 0.0) >= 1.0:
+            lines.append(
+                "  [!] no repetition penalty at this temperature: a long "
+                "trajectory can degenerate into one repeated token, which "
+                "scores zero and reads as a bad harness"
+            )
     lines.append(f"  fingerprint  {identity.fingerprint}")
     return "\n".join(lines)
 
