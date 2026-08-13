@@ -2485,6 +2485,11 @@ async function act(tab, name, fn, okMessage) {
     const result = await fn();
     notice(tab, "ok", typeof okMessage === "function" ? okMessage(result) : okMessage);
     await refreshServerState();
+    // The refetch above is authoritative for everything except what the user is
+    // still editing, so the draft goes back on top of it.
+    if (cp.setupDraft && cp.server) {
+      cp.server.config.endpoint = { ...cp.server.config.endpoint, ...cp.setupDraft };
+    }
   } catch (err) {
     // okMessage === null means the caller renders its own result panel, so a
     // generic banner here would just show the same error twice.
@@ -2732,6 +2737,13 @@ function captureSetupDraft() {
   if (cp.server) {
     const { api_key, ...withoutKey } = endpoint;   // eslint-disable-line no-unused-vars
     cp.server.config.endpoint = { ...cp.server.config.endpoint, ...withoutKey };
+    // Held separately because every action refetches /api/state on success and
+    // replaces cp.server wholesale. Folding into that object alone is not
+    // enough: a *successful* connection test would then snap the form back to
+    // the stored configuration, and the URL being tested is exactly the one not
+    // stored yet. The box would look empty, its placeholder reads as a value,
+    // and the save that follows sends nothing.
+    cp.setupDraft = withoutKey;
   }
   return endpoint;
 }
@@ -2752,9 +2764,13 @@ function wireSetup() {
   const save = $("#btn-save-config");
   if (save) save.onclick = () => {
     const endpoint = captureSetupDraft();
-    act("setup", "save", () =>
-      api("/api/config", { method: "POST", body: { endpoint } }),
-      "Configuration saved.");
+    act("setup", "save", async () => {
+      const saved = await api("/api/config", { method: "POST", body: { endpoint } });
+      // Stored now, so the refetched state is the truth and the draft must not
+      // outlive it, or a later edit elsewhere would resurrect this one.
+      cp.setupDraft = null;
+      return saved;
+    }, "Configuration saved.");
   };
 
   const storage = $("#btn-save-storage");

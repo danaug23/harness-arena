@@ -334,6 +334,47 @@ if (!process.argv[2]) {
   if (!complete) failed++;
 }
 
+// ---- the setup form's draft --------------------------------------------
+// Every action refetches /api/state on success and replaces cp.server. The URL
+// being typed is, by definition, the one not stored yet, so a successful
+// connection test used to snap the box back to empty. Its placeholder renders
+// the provider default, which reads as a filled-in value, and the save that
+// follows then sends nothing: on a fresh install the endpoint could not be set
+// through the UI at all.
+if (!process.argv[2]) {
+  const TYPED = "http://192.0.2.10:8080/v1";
+  const fields = { "ep-base-url": TYPED, "ep-provider": "openai-compatible" };
+  const el = (id) => ({
+    value: fields[id] ?? "", checked: false,
+    classList: { add() {}, remove() {}, toggle() {} },
+    setAttribute() {}, getAttribute: () => null, style: {},
+    textContent: "", innerHTML: "",
+    getBoundingClientRect: () => ({ width: 0, height: 0 }),
+    getContext: () => null, closest: () => null,
+  });
+  const box = vm.createContext(Object.assign({}, sandbox, {
+    document: {
+      querySelector: (s) => el(String(s).replace(/^#/, "")),
+      querySelectorAll: () => [], addEventListener() {}, body: el("body"),
+    },
+  }));
+  box.globalThis = box;
+  vm.runInContext(script[1], box);
+  const stored = `{config:{endpoint:{base_url:"",provider:"openai-compatible",model:""}}}`;
+  vm.runInContext(`cp.tab="setup"; cp.server=${stored};`, box);
+  vm.runInContext(
+    `renderTab=()=>{}; notice=()=>{}; setPaneBusy=()=>{};` +
+    `refreshServerState=async()=>{ cp.server=${stored}; };`, box);
+  const kept = await vm.runInContext(`(async()=>{
+    captureSetupDraft();
+    await act("setup","test", async()=>({ok:true}), "tested");
+    return cp.server.config.endpoint.base_url;
+  })()`, box);
+  const ok = kept === TYPED;
+  console.log(`${ok ? "PASS" : "FAIL"}  a successful test keeps the URL being typed`);
+  if (!ok) failed++;
+}
+
 // ---- live feed -------------------------------------------------------------
 if (!process.argv[2]) {
   const feedState = (extra) => JSON.stringify(Object.assign({
