@@ -49,7 +49,7 @@ COMMANDS: dict[str, tuple[str, str]] = {
 def usage() -> str:
     width = max(len(name) for name in COMMANDS)
     lines = [
-        "harness-arena -- benchmark agent harnesses against one model.",
+        "harness-arena -- benchmark agent harnesses against a model.",
         "",
         "usage: harness-arena <command> [options]",
         "",

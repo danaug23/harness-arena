@@ -5,7 +5,7 @@
 
 # harness-arena
 
-Benchmark **agent harnesses** against one model, on Terminal-Bench 2.
+Benchmark **agent harnesses** against a model, on Terminal-Bench 2.
 
 The premise, from [Harrison Kinsley's *The right harness is all you
 need*](https://hkinsley.com/reflections/right-harness-is-all-you-need): hold the
