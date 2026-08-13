@@ -118,10 +118,23 @@ are bounded because every one of them changes what a run *measures*.
 
 ## Quick start
 
-Clone, build the environment, point it at a model, open the browser.
+Install it, point it at a model, open the browser.
 **Everything after `harness-arena dash` happens in the UI**: the endpoint URL,
 the model, context sizes, timeouts, pre-pulling the task images, starting and
 stopping runs. There is no config file to write by hand.
+
+```bash
+pip install harness-arena
+
+mkdir my-bench && cd my-bench            # your config, runs and caches live here
+```
+
+The directory you run from is the one it works out of, so make one for the
+purpose rather than running from your home directory. Nothing is written beside
+the installed package.
+
+Prefer to read or change the code, or add a harness? Clone instead, and every
+path moves next to the checkout:
 
 ```bash
 git clone https://github.com/danaug23/harness-arena
@@ -285,8 +298,8 @@ harness-arena prepull                    # cache task images (once per machine)
 harness-arena bench --subset stratified-25
 ```
 
-Windows PowerShell without installing: `.\run.ps1 <command>`.
-Linux/macOS without installing: `./run.sh <command>`.
+From a clone, the same commands run without installing anything:
+`.\run.ps1 <command>` on Windows PowerShell, `./run.sh <command>` elsewhere.
 
 ---
 
@@ -330,6 +343,26 @@ Linux/macOS without installing: `./run.sh <command>`.
 | **Node.js** | Only for the dashboard test suite. Not needed to run benchmarks. |
 
 ### Install
+
+```bash
+pip install harness-arena
+```
+
+That is the whole install. Work from a directory of your own, because that is
+where it keeps your files:
+
+| | installed from PyPI | cloned |
+|---|---|---|
+| `config.yaml` | the directory you run from | beside the checkout |
+| `runs/` | the directory you run from | beside the checkout |
+| model label cache | `.harness-arena/` there | `bench/models.json` |
+| harness catalog | the packaged one, until you edit it; your copy after | `harnesses/registry.yaml`, committed |
+
+Nothing is ever written next to the installed package, so an upgrade cannot
+take your runs with it and a read-only or shared install still works.
+
+Clone instead when you want to change the code, add an adapter, or keep the
+harness catalog under version control with the rest of your setup:
 
 ```bash
 git clone https://github.com/danaug23/harness-arena
