@@ -504,6 +504,60 @@ for _mod, _cls in (("harnesses.hermes", "Hermes"), ("harnesses.omp", "Omp"),
         check(f"{_cls} log is tailable", _name in LOG_NAMES, True)
 
 
+print("\n-- harness pinning --")
+
+# Every harness installs from an upstream that keeps moving. Unpinned, the
+# build a run gets is decided by when the trial happened to start, so a run
+# cannot be reproduced and -- as on 2026-08-13, when hermes-agent made a failed
+# npm install fatal mid-run -- one run can span two different harnesses. This
+# asserts the catalog names a build for each, not that the build is any good.
+_catalog = load(REGISTRY_PATH)
+for _hid, _spec in _catalog["harnesses"].items():
+    check_true(f"{_hid} pins a version", bool(_spec.get("version")))
+
+# save() rewrites the catalog from parsed YAML and re-emits HEADER, so a header
+# in the file that has drifted from the constant turns every harness edit made
+# from the dashboard into a diff nobody asked for.
+from bench.registry import HEADER, save  # noqa: E402
+
+def _lf(text: str) -> str:
+    """Content without the line-ending question.
+
+    write_text() emits CRLF on Windows and LF elsewhere, and git hands the
+    checkout either one depending on core.autocrlf. Comparing raw bytes would
+    make this suite pass or fail on that setting rather than on drift, which is
+    the thing it exists to catch.
+    """
+    return text.replace("\r\n", "\n")
+
+
+check_true(
+    "registry.yaml starts with the canonical header",
+    _lf(REGISTRY_PATH.read_text(encoding="utf-8")).startswith(_lf(HEADER)),
+)
+
+with tempfile.TemporaryDirectory() as _tmp:
+    _copy = Path(_tmp) / "registry.yaml"
+    _copy.write_text(REGISTRY_PATH.read_text(encoding="utf-8"), encoding="utf-8")
+    _before = _lf(_copy.read_text(encoding="utf-8"))
+    save(load(_copy), _copy)
+    # A save that is not a no-op means the committed file and the writer
+    # disagree, and the next UI edit silently reformats the whole catalog.
+    # Compared as a diff rather than as two strings: the catalog is ~4KB, and
+    # a check that prints both copies on every run buries the suite's output.
+    import difflib  # noqa: E402
+
+    _drift = "".join(
+        difflib.unified_diff(
+            _before.splitlines(keepends=True),
+            _lf(_copy.read_text(encoding="utf-8")).splitlines(keepends=True),
+            "committed",
+            "after save()",
+        )
+    )
+    check("save(load(catalog)) rewrites nothing", _drift, "")
+
+
 print()
 if failures:
     print(f"{len(failures)} FAILED: {', '.join(failures)}")

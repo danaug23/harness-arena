@@ -23,6 +23,40 @@ from bench import USER_REGISTRY_PATH, registry_path
 from bench.config import looks_like_key
 
 #: Harness ids become directory-name components, so keep them boring.
+#: The catalog's preamble, kept here rather than only in the file because
+#: `save()` rewrites registry.yaml from parsed YAML -- which drops every
+#: comment in it. Anything worth telling the next reader has to live in this
+#: constant to survive an edit made from the dashboard. harnesses/registry.yaml
+#: begins with exactly this text; tests/test_local_agents.py checks that they
+#: have not drifted, because a mismatch means every UI edit rewrites the header
+#: and shows up as spurious churn in the diff.
+HEADER = """\
+# Harness catalog -- the extension point of this rig.
+#
+# NEVER put a credential in this file: it is committed. Use {api_key},
+# which is resolved at run time and scrubbed out of manifests and logs.
+#
+# Placeholders: {model_id} {base_url} {base_url_root} {host} {n_ctx}
+#               {max_tokens} {label} {api_key}
+#
+# `version:` pins the harness build a run installs, and every harness here is
+# pinned on purpose. Unpinned, an install resolves whatever upstream's default
+# branch holds at the moment each trial starts, which fails two ways: two runs
+# a week apart measure different harnesses under one name, and a push *during*
+# a run changes the harness between trials of that run. On 2026-08-13
+# NousResearch/hermes-agent@6a198f8a1 made a failed `npm install` fatal 2h42m
+# into an 89-task run -- the 31 trials before it installed cleanly, 28 of the
+# 33 after it died. One run, two harnesses, one number.
+#
+# The ref is per-installer: git tag (hermes, omp), commit sha (minion), npm
+# version (claude-code, codex), release version (opencode). Bumping one is
+# deliberate -- re-run that harness before comparing across the change.
+#
+# Comments below this line do not survive an edit made from the dashboard:
+# that path rewrites the file from parsed YAML and re-emits only this header.
+
+"""
+
 _ID = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
 
 #: Substitutions the runner fills in. Anything else in braces is a typo that
@@ -76,17 +110,8 @@ def save(data: dict[str, Any], path=None) -> None:
     target.parent.mkdir(parents=True, exist_ok=True)
     if target.exists():
         shutil.copy2(target, target.with_suffix(".yaml.bak"))
-    header = (
-        "# Harness catalog -- the extension point of this rig.\n"
-        "#\n"
-        "# NEVER put a credential in this file: it is committed. Use {api_key},\n"
-        "# which is resolved at run time and scrubbed out of manifests and logs.\n"
-        "#\n"
-        "# Placeholders: {model_id} {base_url} {base_url_root} {host} {n_ctx}\n"
-        "#               {max_tokens} {label} {api_key}\n\n"
-    )
     body = yaml.dump(data, default_flow_style=False, sort_keys=False, width=88)
-    target.write_text(header + body, encoding="utf-8")
+    target.write_text(HEADER + body, encoding="utf-8")
 
 
 def _check_values(spec: Any, where: str = "") -> None:

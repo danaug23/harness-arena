@@ -31,9 +31,16 @@ from harbor.agents.installed.base import (
 from harbor.environments.base import BaseEnvironment
 from harbor.models.agent.context import AgentContext
 
-_INSTALL_SCRIPT = (
-    "https://raw.githubusercontent.com/can1357/oh-my-pi/main/scripts/install.sh"
-)
+#: The installer, fetched from the pinned ref rather than from ``main``.
+#: ``--ref`` selects which build the script *downloads*; the script itself
+#: comes from whatever URL is used here, so pinning only the flag would leave
+#: the installer floating and an upstream change to it would still reach a
+#: pinned run. See harnesses/hermes.py for the run this actually cost.
+_RAW_BASE = "https://raw.githubusercontent.com/can1357/oh-my-pi"
+
+
+def _install_script_url(ref: str | None) -> str:
+    return f"{_RAW_BASE}/{ref or 'main'}/scripts/install.sh"
 
 # Where install.sh drops the binary (PI_INSTALL_DIR default).
 _INSTALL_DIR = "$HOME/.local/bin"
@@ -145,12 +152,13 @@ class Omp(BaseInstalledAgent):
             env={"DEBIAN_FRONTEND": "noninteractive"},
         )
         ref_flag = f" --ref {shlex.quote(self._version)}" if self._version else ""
+        script_url = _install_script_url(self._version)
         await self.exec_as_agent(
             environment,
             command=(
                 "set -eu; "
                 f'export PI_INSTALL_DIR="{_INSTALL_DIR}"; '
-                f"curl -fsSL {_INSTALL_SCRIPT} | sh -s -- --binary{ref_flag} && "
+                f"curl -fsSL {shlex.quote(script_url)} | sh -s -- --binary{ref_flag} && "
                 f'export PATH="{_INSTALL_DIR}:$PATH" && '
                 "omp --version"
             ),

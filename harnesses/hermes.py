@@ -40,6 +40,14 @@ from harbor.models.agent.context import AgentContext
 
 HERMES_HOME = "/tmp/hermes"
 
+#: Where the installer is fetched from. Joined with the pinned ref rather than
+#: with ``main``, so pinning a harness pins the script that installs it too.
+_RAW_BASE = "https://raw.githubusercontent.com/NousResearch/hermes-agent"
+
+#: Installer output, kept under /logs/agent because that directory is collected
+#: as a trial artifact -- a container that dies takes anything else with it.
+_INSTALL_LOG = "/logs/agent/hermes-install.log"
+
 #: hermes-agent refuses to initialise below this and exits during startup:
 #: "has a context window of N tokens, which is below the minimum 64,000
 #: required by Hermes Agent". Harbor sees only a non-zero exit, so the reason
@@ -92,6 +100,93 @@ class Hermes(HarborHermes):
     @override
     def name() -> str:
         return "hermes"
+
+    # ------------------------------------------------------------------
+    # Install
+    # ------------------------------------------------------------------
+
+    @override
+    async def install(self, environment: BaseEnvironment) -> None:
+        """Install hermes-agent, gated on the CLI working rather than on the
+        installer's exit code.
+
+        Harbor's version of this step fetches ``scripts/install.sh`` from
+        ``main`` and lets ``set -euo pipefail`` propagate whatever the script
+        returns. Two separate problems come from that, and both were measured
+        rather than guessed:
+
+        * **The script is unpinned even when the build is.** ``--branch`` picks
+          which revision the script *clones*; the script itself is always
+          upstream's current one. So pinning the harness pins the agent and not
+          its installer, and an installer change still reaches a pinned run.
+
+        * **The installer's exit code is not the question we are asking.** On
+          2026-08-13 upstream commit 6a198f8a1 made a failed ``npm install``
+          fatal where it had been a warning. What fails is ``node-pty``, a
+          native module built by ``node-gyp``: Terminal-Bench images mostly
+          carry no ``make``/``g++``, the build cannot run, and the installer now
+          returns 1. Of 33 trials that started after that commit landed, 28 died
+          here -- every one of them before the model was ever contacted, and all
+          for a browser/TUI dependency this adapter never enables (it configures
+          ``toolsets: [hermes-cli]``). The four survivors were exactly the four
+          task images that ship both ``make`` and ``g++``.
+
+        So the script is fetched from the pinned ref, and the gate is ``hermes
+        version`` -- the same shape ``omp`` and ``opencode`` already use. A
+        degraded install that still runs the agent is a run; one that cannot is
+        a failure, and it fails with the installer's own output attached rather
+        than a bare non-zero exit.
+        """
+        await self.exec_as_root(
+            environment,
+            command="apt-get update && apt-get install -y curl git ripgrep xz-utils",
+            env={"DEBIAN_FRONTEND": "noninteractive"},
+        )
+
+        ref = self._version or "main"
+        script_url = f"{_RAW_BASE}/{ref}/scripts/install.sh"
+        branch_flag = f" --branch {shlex.quote(self._version)}" if self._version else ""
+        await self.exec_as_agent(
+            environment,
+            command=(
+                "set -u; "
+                f'log={_INSTALL_LOG}; mkdir -p /logs/agent 2>/dev/null || true; '
+                ': >"$log" 2>/dev/null || log=/tmp/hermes-install.log; '
+                # Deliberately not `set -e` around the installer: a non-zero
+                # exit here is a report about optional components, not proof
+                # that the agent is unusable. The check below decides that.
+                f"curl -fsSL {shlex.quote(script_url)} -o /tmp/hermes-install.sh "
+                '>>"$log" 2>&1 || '
+                f"{{ echo 'hermes install: could not fetch {script_url}'; "
+                '  tail -n 20 "$log" 2>/dev/null; exit 1; }; '
+                # bash, not sh: the installer uses [[ ]], arrays and process
+                # substitution throughout, and Debian-derived images point
+                # /bin/sh at dash -- which parses none of it and dies at its
+                # first conditional with "[[: not found". Harbor's version
+                # piped the script into `bash -s --` and got this for free;
+                # writing it to a file to keep the exit code separate from
+                # curl's makes the interpreter an explicit choice.
+                f'bash /tmp/hermes-install.sh --skip-setup{branch_flag} '
+                '>>"$log" 2>&1; '
+                'rc=$?; '
+                'export PATH="$HOME/.local/bin:$PATH"; '
+                f'export HERMES_HOME="${{HERMES_HOME:-{HERMES_HOME}}}"; '
+                'mkdir -p "$HERMES_HOME" "$HERMES_HOME/sessions" '
+                '"$HERMES_HOME/skills" "$HERMES_HOME/memories"; '
+                # The real gate. Anything the installer skipped that the agent
+                # actually needs shows up here.
+                "if ! hermes version; then "
+                '  echo "hermes install: the CLI does not run '
+                '(installer exit $rc)"; '
+                '  tail -n 40 "$log" 2>/dev/null; '
+                "  exit 1; "
+                "fi; "
+                'if [ "$rc" -ne 0 ]; then '
+                '  echo "hermes install: installer exit $rc, but the CLI runs '
+                '-- continuing (optional components may be missing)"; '
+                "fi"
+            ),
+        )
 
     def _model_id(self) -> str:
         if not self.model_name:

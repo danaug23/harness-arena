@@ -5,6 +5,22 @@
 #
 # Placeholders: {model_id} {base_url} {base_url_root} {host} {n_ctx}
 #               {max_tokens} {label} {api_key}
+#
+# `version:` pins the harness build a run installs, and every harness here is
+# pinned on purpose. Unpinned, an install resolves whatever upstream's default
+# branch holds at the moment each trial starts, which fails two ways: two runs
+# a week apart measure different harnesses under one name, and a push *during*
+# a run changes the harness between trials of that run. On 2026-08-13
+# NousResearch/hermes-agent@6a198f8a1 made a failed `npm install` fatal 2h42m
+# into an 89-task run -- the 31 trials before it installed cleanly, 28 of the
+# 33 after it died. One run, two harnesses, one number.
+#
+# The ref is per-installer: git tag (hermes, omp), commit sha (minion), npm
+# version (claude-code, codex), release version (opencode). Bumping one is
+# deliberate -- re-run that harness before comparing across the change.
+#
+# Comments below this line do not survive an edit made from the dashboard:
+# that path rewrites the file from parsed YAML and re-emits only this header.
 
 harnesses:
   hermes:
@@ -14,6 +30,7 @@ harnesses:
     agent: harnesses.hermes:Hermes
     model_ref: local/{model_id}
     min_context_window: 64000
+    version: v2026.8.3
     agent_kwargs:
       base_url: '{base_url}'
       api_key: '{api_key}'
@@ -25,6 +42,7 @@ harnesses:
     repo: https://github.com/Sentdex/minion
     agent: harnesses.minion:Minion
     model_ref: local/{model_id}
+    version: 900b51d6d2926f2d6ba8c6f3ebd8f8c9eb635b39
     agent_kwargs:
       base_url: '{base_url}'
       api_key: '{api_key}'
@@ -35,6 +53,7 @@ harnesses:
     repo: https://github.com/can1357/oh-my-pi
     agent: harnesses.omp:Omp
     model_ref: local/{model_id}
+    version: v17.3.1
     agent_kwargs:
       base_url: '{base_url}'
       api_key: '{api_key}'
@@ -47,6 +66,7 @@ harnesses:
     agent: claude-code
     model_ref: '{model_id}'
     min_context_window: 32768
+    version: 2.1.223
     host_env:
       ANTHROPIC_BASE_URL: '{base_url_root}'
       CLAUDE_CODE_MAX_OUTPUT_TOKENS: '{max_tokens}'
@@ -59,6 +79,7 @@ harnesses:
     repo: https://github.com/openai/codex
     agent: harnesses.codex:Codex
     model_ref: '{model_id}'
+    version: 0.147.0
     agent_env:
       OPENAI_API_KEY: '{api_key}'
     agent_kwargs:
@@ -72,6 +93,7 @@ harnesses:
     repo: https://github.com/anomalyco/opencode
     agent: harnesses.opencode:OpenCode
     model_ref: local/{model_id}
+    version: 1.18.18
     agent_kwargs:
       base_url: '{base_url}'
       api_key: '{api_key}'

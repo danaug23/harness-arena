@@ -163,7 +163,29 @@ class Minion(BaseInstalledAgent):
             env={"DEBIAN_FRONTEND": "noninteractive"},
         )
 
-        ref = f" --branch {shlex.quote(self._version)}" if self._version else ""
+        # `git clone --branch` takes a branch or a tag and rejects a commit sha
+        # ("Remote branch <sha> not found in upstream origin"). minion publishes
+        # neither -- no tags, no releases -- so a sha is the only way to pin it,
+        # and --branch alone would make the catalog unable to express that.
+        # Fetching the ref explicitly accepts all three, and is what a pinned
+        # run needs: without it minion installs whatever main holds when the
+        # trial starts, which is how an upstream push lands mid-run.
+        ref = shlex.quote(self._version) if self._version else ""
+        clone = (
+            f'if ! git clone {_REPO} {_INSTALL_DIR} >>"$log" 2>&1; then '
+            "  echo 'minion install: git clone failed'; "
+            '  tail -n 30 "$log" 2>/dev/null || true; exit 1; '
+            "fi; "
+            f'if ! git -C {_INSTALL_DIR} checkout --detach {ref} >>"$log" 2>&1; then '
+            f"  echo 'minion install: ref {ref} not found in the clone'; "
+            '  tail -n 30 "$log" 2>/dev/null || true; exit 1; '
+            "fi; "
+        ) if self._version else (
+            f'if ! git clone --depth 1 {_REPO} {_INSTALL_DIR} >>"$log" 2>&1; then '
+            "  echo 'minion install: git clone failed'; "
+            '  tail -n 30 "$log" 2>/dev/null || true; exit 1; '
+            "fi; "
+        )
         await self.exec_as_root(
             environment,
             command=(
@@ -172,10 +194,7 @@ class Minion(BaseInstalledAgent):
                 "set -u; "
                 f'log={_INSTALL_LOG}; [ -w "$log" ] || log=/tmp/minion-install.log; '
                 f"rm -rf {_INSTALL_DIR}; "
-                f'if ! git clone --depth 1{ref} {_REPO} {_INSTALL_DIR} >>"$log" 2>&1; then '
-                "  echo 'minion install: git clone failed'; "
-                '  tail -n 30 "$log" 2>/dev/null || true; exit 1; '
-                "fi; "
+                f"{clone}"
                 # Install what minion says it needs rather than a list kept here.
                 # Naming the dependencies in this file drifts the moment upstream
                 # changes one, which is exactly what happened: this installed

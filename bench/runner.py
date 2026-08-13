@@ -421,6 +421,27 @@ def build_command(
 
     for key, value in (spec.get("agent_env") or {}).items():
         argv += ["--ae", f"{key}={value}"]
+
+    # The catalog's `version:` is the harness build this run installs. It
+    # travels as the agent's `version` kwarg, which is where Harbor's
+    # BaseInstalledAgent already keeps it (`self._version`) and what every
+    # install step here reads.
+    #
+    # Unpinned, each install resolves whatever upstream's default branch holds
+    # at the moment the trial starts. That is not merely irreproducible across
+    # days: a push mid-run changes the harness *between trials of one run*, so
+    # its trials stop being measurements of the same thing and the run's pass
+    # rate averages two different harnesses. That is not hypothetical -- it is
+    # what NousResearch/hermes-agent@6a198f8a1 did on 2026-08-13, turning a
+    # warning into a fatal install error 2h42m into a 89-task run: the 31
+    # trials before it installed cleanly and 28 of the 33 after it died.
+    #
+    # An explicit agent_kwargs entry still wins, so a catalog can override the
+    # pin per harness without this reaching around it.
+    pinned = spec.get("version")
+    if pinned and "version" not in (spec.get("agent_kwargs") or {}):
+        argv += ["--ak", f"version={pinned}"]
+
     for key, value in (spec.get("agent_kwargs") or {}).items():
         argv += ["--ak", f"{key}={value}"]
     argv += list(extra_args or [])
@@ -466,6 +487,11 @@ def write_manifest(
         "batch_id": batch_id or None,
         "harness_vendor": spec.get("vendor"),
         "harness_repo": spec.get("repo"),
+        # The pinned harness build, or null when the catalog left it floating.
+        # Without this a finished run cannot say which harness produced it,
+        # which is the difference between "hermes scored 20%" and a number
+        # nobody can reproduce or even attribute.
+        "harness_version": spec.get("version"),
         "agent_ref": spec.get("agent"),
         "model": model.to_dict(),
         # What the harnesses were told about the model, resolved from the probe.

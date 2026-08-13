@@ -36,6 +36,7 @@ from __future__ import annotations
 import argparse
 import json
 import secrets
+import sys
 import threading
 import time
 import webbrowser
@@ -750,6 +751,40 @@ def make_handler(app: App) -> type[BaseHTTPRequestHandler]:
     return Handler
 
 
+class _QuietThreadingHTTPServer(ThreadingHTTPServer):
+    """ThreadingHTTPServer that does not report a dropped connection as a crash.
+
+    ``log_message`` above silences one line per poll; this silences the other,
+    louder half of the same problem. ``socketserver`` treats any exception out
+    of a request thread as unexpected and prints a 19-line traceback to stderr,
+    and a browser dropping a keep-alive socket raises exactly that:
+
+        ConnectionResetError: [WinError 10054] An existing connection was
+        forcibly closed by the remote host
+
+    The page polls four endpoints (results, activity and supervisor every 5s,
+    the run console every 2s) for as long as it is open, so on Windows a
+    dashboard left up during a benchmark buries its own output. Measured: ten
+    dropped sockets produced 190 lines of stderr, while ten completed requests
+    produced none -- it is the drop that is reported, never the request.
+
+    Nothing is being hidden here. A dropped client is not an error; it is the
+    normal end of a connection the client no longer wants, and every route
+    already answers its own failures with a JSON 500. Anything that is *not*
+    that still prints, because a real handler crash should be loud.
+    """
+
+    #: Errno-bearing socket teardowns, by name rather than by WinError number:
+    #: the same event is ECONNRESET/ECONNABORTED/EPIPE on Linux and macOS, and
+    #: the dashboard is developed on all three.
+    _DROPPED = (ConnectionResetError, ConnectionAbortedError, BrokenPipeError)
+
+    def handle_error(self, request: Any, client_address: Any) -> None:
+        if issubclass(sys.exc_info()[0] or Exception, self._DROPPED):
+            return
+        super().handle_error(request, client_address)
+
+
 # --- route table -----------------------------------------------------------
 
 Route = Callable[[App, dict[str, Any], dict[str, list[str]]], Any]
@@ -879,7 +914,7 @@ def main(argv: list[str] | None = None) -> int:
     token = "" if args.read_only else secrets.token_urlsafe(32)
 
     app = App(config, runs_dir, token, bind_host=host, read_only=args.read_only)
-    server = ThreadingHTTPServer((host, port), make_handler(app))
+    server = _QuietThreadingHTTPServer((host, port), make_handler(app))
     url = f"http://{host}:{port}/"
     print(f"harness-arena dashboard: {url}")
     print(f"code:     {ROOT}")
