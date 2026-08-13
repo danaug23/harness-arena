@@ -27,7 +27,7 @@ from typing import Any
 import yaml
 
 from bench import REGISTRY_PATH, ROOT, WORKSPACE, subset_names, subset_path
-from bench.config import DEFAULT_CONTEXT_WINDOW, Config, scrub
+from bench.config import DEFAULT_CONTEXT_WINDOW, Config, ConfigError, scrub
 from bench.probe import ModelIdentity, add_endpoint_args, config_from_args, describe, resolve
 from bench.supervisor import clear_run_marker, write_run_marker
 from bench.watchdog import HEALTH_FILENAME, EndpointWatchdog, health_url
@@ -758,10 +758,21 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    config = config_from_args(args)
-    jobs_dir = args.jobs_dir or config.resolved_runs_dir()
-
-    model = resolve(config.endpoint, interactive=not args.no_input)
+    # An unset or unreachable endpoint is the first thing anyone hits, and it is
+    # a question about configuration rather than a defect. `doctor` has always
+    # answered it in a sentence; a run answered it with a traceback, which buries
+    # the one line that says what to do in twenty that do not.
+    try:
+        config = config_from_args(args)
+        jobs_dir = args.jobs_dir or config.resolved_runs_dir()
+        model = resolve(config.endpoint, interactive=not args.no_input)
+    except (ConfigError, RuntimeError) as exc:
+        raise SystemExit(
+            f"\n{exc}\n\n"
+            f"Set the endpoint on the dashboard's Setup tab, or run "
+            f"`harness-arena init`.\n"
+            f"`harness-arena doctor` checks the whole chain."
+        ) from None
     print(f"\nModel under test: {model.label}")
     print(describe(model))
 
