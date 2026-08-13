@@ -265,42 +265,139 @@ quietly mixing two sets of results into one label.
 
 ### Serving with Ollama
 
-Three things differ, and none of them announce themselves:
+Three things differ, and none of them announce themselves: where the server
+reads its settings from, the address you hand the dashboard, and a context
+window that has to be told to Ollama and to this rig separately.
 
-1. **Bind to all interfaces** (`OLLAMA_HOST=0.0.0.0`) and give the dashboard
-   your machine's LAN address, `http://192.0.2.10:11434/v1`, **not**
-   `localhost`. That same string is injected into every task container, where
-   `localhost` means the container itself. Allow the port through your firewall,
-   then confirm the path end to end rather than from the host only:
+**Two variables, and where you set them is the whole problem.** Both are read
+by the *server* when it starts, so typing them in the shell you run `ollama`
+from changes nothing: on Windows and macOS the copy launched at login already
+owns the port, and your `ollama` command is only a client talking to it. Set
+them where that server will see them, then restart it.
 
-   ```bash
-   docker run --rm busybox wget -qO- http://192.0.2.10:11434/v1/models
-   ```
+| | Set to | Default if you leave it |
+|---|---|---|
+| `OLLAMA_HOST` | `0.0.0.0:11434` | `127.0.0.1:11434`, which no container can reach |
+| `OLLAMA_CONTEXT_LENGTH` | `65536` | picked from your VRAM, `4k/32k/256k` |
 
-2. **Raise the context** (`OLLAMA_CONTEXT_LENGTH`). The default is 4096 and
-   anything past it is truncated *silently*, which scores as a reasoning
-   failure rather than as a configuration error.
+The context default is the dangerous one. It is not a number you can predict,
+it changes with the card and the version, and anything past whatever it chose is
+truncated *silently*, which scores as a reasoning failure rather than as a
+configuration error.
 
-   **64K is a floor, not a preference.** hermes-agent refuses to initialise
-   below 64,000 tokens and exits, so anything less loses that harness entirely.
-   The run is now refused up front rather than failing once per task, but
-   refused is still refused. Serve at least `65536`.
+**64K is a floor, not a preference.** hermes-agent refuses to initialise below
+64,000 tokens and exits, so anything less loses that harness entirely. The run
+is refused up front rather than failing once per task, but refused is still
+refused. Serve at least `65536`.
 
-   Keep it inside VRAM: once the model spills to CPU, throughput collapses and
-   tasks start dying on time rather than on capability. If 64K does not fit,
-   quantize the KV cache rather than lowering the window,
-   `OLLAMA_KV_CACHE_TYPE=q8_0` roughly halves it and is close to lossless. On
-   one 8 GB card that is the difference between 64K not fitting at all and
-   fitting in 6.4 GB, and it measured *faster*, since a smaller cache moves
-   less memory per token.
+Keep it inside VRAM: once the model spills to CPU, throughput collapses and
+tasks start dying on time rather than on capability. If 64K does not fit,
+quantize the KV cache rather than lowering the window, `OLLAMA_KV_CACHE_TYPE=q8_0`
+roughly halves it and is close to lossless. On one 8 GB card that is the
+difference between 64K not fitting at all and fitting in 6.4 GB, and it measured
+*faster*, since a smaller cache moves less memory per token.
 
-3. **Set the context window on the Setup tab** to match
-   `OLLAMA_CONTEXT_LENGTH`. Ollama serves neither `/props` nor `meta.n_ctx`, so
-   the probe reports `n_ctx: 0` and every harness would otherwise be handed the
-   conservative fallback. One box covers every harness; there is no need to edit
-   any harness entry. Ollama's `/api/show` does report a context length, but it is the
-   model's architectural maximum rather than what the server was configured to
-   serve, so reading it would trade an obvious failure for a silent one.
+#### Windows
+
+Quit Ollama first, from the system tray: right-click the icon and **Quit**.
+Closing the window leaves the server running and holding the port.
+
+Persist the variables for your account, then start Ollama again from the Start
+menu. Neither command touches a process that is already running, which is why
+the restart is the step that applies them.
+
+```powershell
+# PowerShell
+[Environment]::SetEnvironmentVariable('OLLAMA_HOST', '0.0.0.0:11434', 'User')
+[Environment]::SetEnvironmentVariable('OLLAMA_CONTEXT_LENGTH', '65536', 'User')
+```
+
+```bat
+:: Command Prompt
+setx OLLAMA_HOST "0.0.0.0:11434"
+setx OLLAMA_CONTEXT_LENGTH "65536"
+```
+
+Or skip the tray app and run the server in the window itself, which is the
+fastest way to be certain what it was handed. These last only for that window,
+and only reach the server because it is started from there:
+
+```powershell
+# PowerShell
+$env:OLLAMA_HOST = "0.0.0.0:11434"
+$env:OLLAMA_CONTEXT_LENGTH = "65536"
+ollama serve
+```
+
+```bat
+:: Command Prompt
+set OLLAMA_HOST=0.0.0.0:11434
+set OLLAMA_CONTEXT_LENGTH=65536
+ollama serve
+```
+
+Allow the port through Windows Firewall the first time it asks, and confirm the
+server actually moved off loopback:
+
+```powershell
+Get-NetTCPConnection -LocalPort 11434 -State Listen | Select-Object LocalAddress
+# 0.0.0.0 is what you want. 127.0.0.1 means it did not take.
+```
+
+#### macOS
+
+```bash
+launchctl setenv OLLAMA_HOST "0.0.0.0:11434"
+launchctl setenv OLLAMA_CONTEXT_LENGTH "65536"
+```
+
+Then restart the Ollama application, which is what re-reads them.
+
+#### Linux
+
+```bash
+sudo systemctl edit ollama.service
+```
+
+Add, under `[Service]`:
+
+```ini
+[Service]
+Environment="OLLAMA_HOST=0.0.0.0:11434"
+Environment="OLLAMA_CONTEXT_LENGTH=65536"
+```
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl restart ollama
+```
+
+#### Check it from a container, not from the host
+
+Give the dashboard your machine's **LAN address**, `http://192.0.2.10:11434/v1`,
+**not** `localhost`. That same string is injected into every task container,
+where `localhost` means the container itself. The connection test on the Setup
+tab passes either way, because the dashboard runs on the host, so it cannot
+catch this for you:
+
+```bash
+curl http://192.0.2.10:11434/v1/models                                # from the host
+docker run --rm busybox wget -qO- http://192.0.2.10:11434/v1/models   # what a task sees
+```
+
+`Connection refused` on the second with the first one working means
+`OLLAMA_HOST` did not take, and every task in the run would have failed to reach
+the model.
+
+#### Set the context window on the Setup tab too
+
+It has to be declared twice, once to the server and once here, and matching them
+is on you. Ollama serves neither `/props` nor `meta.n_ctx`, so the probe reports
+`n_ctx: 0` and every harness would otherwise be handed the conservative
+fallback. One box covers every harness; there is no need to edit any harness
+entry. Ollama's `/api/show` does report a context length, but it is the model's
+architectural maximum rather than what the server was configured to serve, so
+reading it would trade an obvious failure for a silent one.
 
 ### Hosted providers
 
