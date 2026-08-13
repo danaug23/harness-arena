@@ -29,6 +29,7 @@ from bench.config import (
     describe,
     load,
 )
+from bench.dockerenv import daemon_hint, install_hint
 
 #: command -> (module providing main(argv), one-line help)
 COMMANDS: dict[str, tuple[str, str]] = {
@@ -245,7 +246,7 @@ def cmd_doctor(argv: list[str]) -> int:
 
     # --- Docker ---
     docker = shutil.which("docker")
-    if not _check("docker on PATH", bool(docker), docker or "install Docker"):
+    if not _check("docker on PATH", bool(docker), docker or install_hint()):
         failures.append("docker")
     else:
         try:
@@ -261,7 +262,7 @@ def cmd_doctor(argv: list[str]) -> int:
             if not _check(
                 "docker daemon running",
                 running,
-                result.stdout.strip() or "start Docker Desktop / the docker service",
+                result.stdout.strip() or daemon_hint(),
             ):
                 failures.append("docker daemon")
         except (OSError, subprocess.SubprocessError) as exc:

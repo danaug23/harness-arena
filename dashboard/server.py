@@ -59,6 +59,7 @@ from bench.config import (
     config_path,
     load,
 )
+from bench.dockerenv import daemon_hint, install_hint
 from bench.probe import describe as describe_model
 from bench.probe import (
     effective_label,
@@ -393,7 +394,7 @@ class App:
                 add("harbor runs", False, str(exc))
 
         docker = shutil.which("docker")
-        add("docker on PATH", bool(docker), docker or "install Docker")
+        add("docker on PATH", bool(docker), docker or install_hint())
         if docker:
             try:
                 out = subprocess.run(
@@ -403,7 +404,7 @@ class App:
                 add(
                     "docker daemon running",
                     out.returncode == 0,
-                    out.stdout.strip() or "start Docker Desktop / the docker service",
+                    out.stdout.strip() or daemon_hint(),
                 )
             except (OSError, subprocess.SubprocessError) as exc:
                 add("docker daemon running", False, str(exc))

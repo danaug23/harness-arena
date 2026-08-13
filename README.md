@@ -118,10 +118,34 @@ are bounded because every one of them changes what a run *measures*.
 
 ## Quick start
 
-Install it, point it at a model, open the browser.
+Install Docker, install this, point it at a model, open the browser.
 **Everything after `harness-arena dash` happens in the UI**: the endpoint URL,
 the model, context sizes, timeouts, pre-pulling the task images, starting and
 stopping runs. There is no config file to write by hand.
+
+### Docker first
+
+**Required, and not bundled.** Every Terminal-Bench task runs in its own Linux
+container, so a container runtime has to be on the machine and running before
+this scores anything. `pip install` cannot supply one.
+
+- **Windows and macOS**:
+  [Docker Desktop](https://www.docker.com/products/docker-desktop/). On Windows
+  both defaults are the ones you want, the **WSL 2** backend and **Linux
+  containers**; switching to Windows containers stops every task from starting.
+- **Linux**: [Docker Engine](https://docs.docker.com/engine/install/), then the
+  [post-install step](https://docs.docker.com/engine/install/linux-postinstall/)
+  so your user can run `docker` without `sudo`.
+
+Start it, leave it running, and confirm the daemon answers:
+
+```bash
+docker info --format '{{.ServerVersion}}'    # prints a version, not an error
+```
+
+Budget **100 GB free disk**. The task images alone total ~60 GB.
+
+### Then harness-arena
 
 ```bash
 mkdir my-bench && cd my-bench            # your config, runs and caches live here
@@ -345,7 +369,7 @@ From a clone, the same commands run without installing anything:
 
 | Requirement | Notes |
 |---|---|
-| **Docker** | Linux containers, running. Task images total ~60 GB; budget 100 GB free. |
+| **Docker** | **Not bundled, install it yourself.** [Docker Desktop](https://www.docker.com/products/docker-desktop/) on Windows and macOS, WSL 2 backend, Linux containers; [Docker Engine](https://docs.docker.com/engine/install/) on Linux, plus the [post-install step](https://docs.docker.com/engine/install/linux-postinstall/) for sudo-less `docker`. The daemon has to be *running*: `docker info` should print a server version. Task images total ~60 GB; budget 100 GB free. |
 | **Python 3.12+** | Any environment, venv, conda, uv. |
 | **A model endpoint** | Anything serving OpenAI-compatible `/v1`, or an OpenRouter key. |
 | **Node.js** | Only for the dashboard test suite. Not needed to run benchmarks. |
