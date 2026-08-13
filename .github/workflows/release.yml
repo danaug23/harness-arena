@@ -52,7 +52,7 @@ jobs:
         run: |
           set -euo pipefail
           tag="${GITHUB_REF_NAME#v}"
-          version=$(python -c "import tomllib;print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+          version=$(python -c "import bench;print(bench.__version__)")
           if [ "$tag" != "$version" ]; then
             echo "Tag $GITHUB_REF_NAME does not match pyproject version $version."
             exit 1

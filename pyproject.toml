@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "harness-arena"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Benchmark agent harnesses against one model, on Terminal-Bench 2."
 authors = [{ name = "Dan August" }]
 maintainers = [{ name = "Dan August" }]
@@ -45,6 +45,9 @@ Issues = "https://github.com/danaug23/harness-arena/issues"
 
 [project.scripts]
 harness-arena = "bench.cli:main"
+
+[tool.setuptools.dynamic]
+version = { attr = "bench.__version__" }
 
 [tool.setuptools]
 # `harnesses` holds the adapter classes Harbor imports by dotted path, and

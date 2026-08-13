@@ -44,7 +44,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from bench import ROOT
+from bench import ROOT, WORKSPACE
 from bench.config import Config, scrub, strip_ansi
 
 MANIFEST_NAME = "harness-bench.json"
@@ -332,7 +332,13 @@ class Supervisor:
 
         process = subprocess.Popen(
             argv,
-            cwd=str(ROOT),
+            # The child works out of your workspace, not out of the code. They
+            # are the same directory in a checkout; installed from a wheel, ROOT
+            # is site-packages, and a child started there would resolve its
+            # config and its label cache inside the installed package.
+            # PYTHONPATH above still points at the code, which is what lets
+            # Harbor import harnesses.* from wherever it was installed.
+            cwd=str(WORKSPACE),
             env=env,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
