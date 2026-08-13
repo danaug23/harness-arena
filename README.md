@@ -124,10 +124,18 @@ the model, context sizes, timeouts, pre-pulling the task images, starting and
 stopping runs. There is no config file to write by hand.
 
 ```bash
-pip install harness-arena
-
 mkdir my-bench && cd my-bench            # your config, runs and caches live here
+
+conda create -n harness-arena python=3.12 -y   # or: python -m venv .venv
+conda activate harness-arena                   #     .venv\Scripts\Activate.ps1
+                                               #     source .venv/bin/activate
+
+pip install harness-arena
 ```
+
+**Python 3.12 or newer**, in an environment of its own. Installing into the
+system Python either fails on the version or, on Debian-derived systems, is
+refused outright as externally managed.
 
 The directory you run from is the one it works out of, so make one for the
 purpose rather than running from your home directory. Nothing is written beside
@@ -345,11 +353,18 @@ From a clone, the same commands run without installing anything:
 ### Install
 
 ```bash
+conda create -n harness-arena python=3.12 -y   # or: python -m venv .venv
+conda activate harness-arena                   #     .venv\Scripts\Activate.ps1
+                                               #     source .venv/bin/activate
+
 pip install harness-arena
 ```
 
-That is the whole install. Work from a directory of your own, because that is
-where it keeps your files:
+The environment is not ceremony: the package needs **Python 3.12 or newer**, and
+`pip install` into a system Python either fails the version check or is refused
+as externally managed on Debian-derived systems.
+
+Work from a directory of your own, because that is where it keeps your files:
 
 | | installed from PyPI | cloned |
 |---|---|---|
