@@ -176,15 +176,20 @@ class Minion(BaseInstalledAgent):
                 "  echo 'minion install: git clone failed'; "
                 '  tail -n 30 "$log" 2>/dev/null || true; exit 1; '
                 "fi; "
-                # openai is minion's only dependency. Debian-derived images ship
-                # an externally-managed Python that refuses a bare pip install,
-                # so the flag is offered and ignored where it is not understood.
-                'python3 -m pip install --quiet openai >>"$log" 2>&1 || '
-                'python3 -m pip install --quiet --break-system-packages openai >>"$log" 2>&1 || '
-                # Third fallback for images carrying an apt-installed copy of one
-                # of openai's dependencies. pip resolves a newer version, tries to
-                # uninstall the dpkg-owned one, and cannot -- packages installed by
-                # dpkg have no RECORD file:
+                # Install what minion says it needs rather than a list kept here.
+                # Naming the dependencies in this file drifts the moment upstream
+                # changes one, which is exactly what happened: this installed
+                # openai alone while minion.py also imports httpx, so every run
+                # died at its first task with ModuleNotFoundError. Its
+                # requirements.txt also pins httpx below 0.28, which a hand-written
+                # `pip install httpx` here would have missed in the other direction.
+                #
+                # Debian-derived images ship an externally-managed Python that
+                # refuses a bare pip install, so the flag is offered and ignored
+                # where it is not understood. The third attempt is for images
+                # carrying an apt-installed copy of a dependency: pip resolves a
+                # newer version, tries to uninstall the dpkg-owned one, and cannot,
+                # because packages installed by dpkg have no RECORD file:
                 #
                 #   Cannot uninstall typing_extensions 4.13.2
                 #   The package's contents are unknown: no RECORD file was found
@@ -192,12 +197,19 @@ class Minion(BaseInstalledAgent):
                 # --ignore-installed leaves the system copy in place and installs
                 # alongside it. Last rather than first because shadowing a distro
                 # package is worth avoiding when the plain path works.
-                'python3 -m pip install --quiet --break-system-packages '
-                '--ignore-installed openai >>"$log" 2>&1 || true; '
-                "if ! python3 -c 'import openai' >/dev/null 2>&1; then "
-                "  echo 'minion install: openai is not importable after pip install'; "
-                '  tail -n 30 "$log" 2>/dev/null || true; exit 1; '
-                "fi; "
+                'inst() { python3 -m pip install --quiet "$@" >>"$log" 2>&1; }; '
+                f'req={_INSTALL_DIR}/requirements.txt; '
+                'if [ -f "$req" ]; then set -- -r "$req"; '
+                "else set -- openai 'httpx<0.28'; fi; "
+                'inst "$@" || inst --break-system-packages "$@" || '
+                'inst --break-system-packages --ignore-installed "$@" || true; '
+                # Check every module minion imports, not just the first one.
+                # Checking openai alone is what let a missing httpx reach a task.
+                'for m in openai httpx; do '
+                '  python3 -c "import $m" >/dev/null 2>&1 || '
+                '    { echo "minion install: $m is not importable after pip install"; '
+                '      tail -n 30 "$log" 2>/dev/null || true; exit 1; }; '
+                'done; '
                 f"test -f {_SCRIPT} || "
                 f"{{ echo 'minion install: {_SCRIPT} missing after clone'; exit 1; }}"
             ),

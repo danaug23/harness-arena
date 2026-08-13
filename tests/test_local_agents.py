@@ -484,6 +484,26 @@ check("no flag follows the instruction",
       True)
 
 
+# ---------------------------------------------------------------------------
+# The live feed can only tail a log it knows the name of
+# ---------------------------------------------------------------------------
+
+print(chr(10) + "-- live feed coverage --")
+
+from bench.activity import LOG_NAMES  # noqa: E402
+
+for _mod, _cls in (("harnesses.hermes", "Hermes"), ("harnesses.omp", "Omp"),
+                   ("harnesses.opencode", "OpenCode"), ("harnesses.minion", "Minion"),
+                   ("harnesses.codex", "Codex")):
+    _agent = getattr(__import__(_mod, fromlist=[_cls]), _cls)
+    _name = getattr(_agent, "_OUTPUT_FILENAME", None)
+    if _name:
+        # An adapter whose filename is missing here has no live feed for its
+        # whole run, and a blank panel reads as a hung agent rather than as a
+        # gap in this tuple.
+        check(f"{_cls} log is tailable", _name in LOG_NAMES, True)
+
+
 print()
 if failures:
     print(f"{len(failures)} FAILED: {', '.join(failures)}")

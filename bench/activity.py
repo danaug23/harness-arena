@@ -69,8 +69,15 @@ def _quiet_seconds(path: Path, size: int) -> float:
 
 # Agent log filenames, in the order we prefer them. Each installed agent tees
 # its stdout to exactly one of these.
+#
+# A harness whose log is not named here has no live feed at all: the panel stays
+# blank for the whole run and reads as a hung agent rather than a missing entry.
+# opencode and minion were both absent, so adding a harness means adding its
+# _OUTPUT_FILENAME here too. tests/test_local_agents.py checks that every
+# adapter's filename is covered, which is cheaper than remembering.
 LOG_NAMES = (
-    "hermes.txt", "omp.txt", "pi.txt", "claude-code.txt", "codex.txt", "agent.txt",
+    "hermes.txt", "omp.txt", "pi.txt", "opencode.txt", "minion.txt",
+    "claude-code.txt", "codex.txt", "agent.txt",
 )
 
 
