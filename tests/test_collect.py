@@ -29,6 +29,7 @@ from bench.activity import (  # noqa: E402
     read_feed,
 )
 from bench.collect import (  # noqa: E402
+    _token_totals,
     build_index,
     head_to_head,
     load_run,
@@ -677,6 +678,44 @@ def test_output_tokens_are_reported_per_solve_and_per_trial(tmp: Path) -> None:
           run["n_token_samples"], 2)
 
 
+def test_prompt_totals_are_repaired_when_input_excludes_cache() -> None:
+    """Runs written before 0.1.10 recorded hermes/opencode input net of cache.
+
+    Cache reads are a subset of the prompt, so `n_input_tokens < n_cache_tokens`
+    cannot happen in a correctly-recorded trial -- which makes it a safe marker
+    for the old form. Repairing on read matters because the runs already on disk
+    are the ones being compared, and understating a prompt total by 18x lands
+    directly in cost-per-solve.
+    """
+    old = {"agent_result": {"n_input_tokens": 1_870_000,
+                            "n_cache_tokens": 32_600_000,
+                            "n_output_tokens": 892_410}}
+    check("pre-0.1.10 input is repaired",
+          _token_totals(old)["n_input_tokens"], 1_870_000 + 32_600_000)
+
+    # The inclusive form is already correct and must be left exactly alone.
+    new = {"agent_result": {"n_input_tokens": 90_127_657,
+                            "n_cache_tokens": 87_532_092,
+                            "n_output_tokens": 2_716_386}}
+    check("inclusive input is untouched",
+          _token_totals(new)["n_input_tokens"], 90_127_657)
+
+    # Equal counts are legal (a fully cached prompt) and must not be doubled.
+    same = {"agent_result": {"n_input_tokens": 500, "n_cache_tokens": 500,
+                             "n_output_tokens": 10}}
+    check("a fully cached prompt is not doubled",
+          _token_totals(same)["n_input_tokens"], 500)
+
+    # No cache field at all: nothing to compare against, so report as given.
+    bare = {"agent_result": {"n_input_tokens": 1234, "n_output_tokens": 10}}
+    check("input without a cache counter is unchanged",
+          _token_totals(bare)["n_input_tokens"], 1234)
+
+    # Output and cost must not be disturbed by the repair.
+    check("output survives the repair",
+          _token_totals(old)["n_output_tokens"], 892_410)
+
+
 if __name__ == "__main__":
     with tempfile.TemporaryDirectory() as scratch:
         test_output_tokens_are_reported_per_solve_and_per_trial(Path(scratch))
@@ -693,6 +732,7 @@ if __name__ == "__main__":
     test_feed_reassembles_token_streams()
     test_feed_renders_unknown_event_shapes()
     test_model_summary_reports_the_window_that_was_used()
+    test_prompt_totals_are_repaired_when_input_excludes_cache()
     test_pairing()
     test_wilson()
     print("\n" + ("FAILED: " + ", ".join(failures) if failures else "all checks passed"))

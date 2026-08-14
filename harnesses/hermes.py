@@ -383,10 +383,23 @@ class Hermes(HarborHermes):
         totals = self._session_totals()
         if not totals:
             return
-        # Against a local llama-server both cache counters are 0, so whether
-        # hermes counts cache reads inside input_tokens is unobservable here.
-        # Reported separately rather than summed, so a cached setup would show
-        # an obvious anomaly instead of a silently inflated input count.
-        context.n_input_tokens = totals["input"]
+        # hermes reports input_tokens NET of cache reads, and Harbor's
+        # n_input_tokens is the total *including* cache -- the same convention
+        # omp and minion already follow. So the two are summed here.
+        #
+        # This used to assign totals["input"] alone, on the reasoning that a
+        # local llama-server reported 0 cache and the question was therefore
+        # unobservable. It is observable now: llama.cpp reports cached tokens,
+        # and a 25-task run measured 1.69M input against 27.97M cache read.
+        # Left unsummed, hermes' prompt total read as 6% of its real size,
+        # which is not a harmless label -- it is the denominator of every
+        # cost-per-solve comparison the dashboard draws between harnesses.
+        #
+        # That cache_read is a *subset* of the prompt rather than a separate
+        # stream is what makes the sum right, and it is checkable in the data:
+        # that run's crack-7z-hash trial logged 34,919 input and 635,146 cache
+        # read across 30 calls. Cache reads cannot exceed prompt tokens, so a
+        # 34,919-token prompt total is arithmetically impossible.
+        context.n_input_tokens = totals["input"] + totals["cache_read"]
         context.n_output_tokens = totals["output"] + totals["reasoning"]
         context.n_cache_tokens = totals["cache_read"]

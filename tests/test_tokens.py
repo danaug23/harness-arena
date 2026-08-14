@@ -112,6 +112,42 @@ def test_hermes_real_export() -> None:
         check("hermes real export: cache", ctx.n_cache_tokens, 0)
 
 
+def test_hermes_session_totals_include_cache() -> None:
+    """hermes reports input NET of cache; n_input_tokens must be the total.
+
+    The fixture above carries cache_read_tokens=0, which is what let hermes
+    ship reporting input alone: with no cache there is nothing to add and both
+    conventions agree. Against a real llama.cpp server they diverge hard -- a
+    25-task run logged 1.69M input against 27.97M cache read -- so the
+    non-zero case gets its own test.
+    """
+    session = {
+        "id": "20200101_000000_bbbbbb",
+        "model": "test-model",
+        "input_tokens": 34919,
+        "output_tokens": 4540,
+        "reasoning_tokens": 60,
+        "cache_read_tokens": 635146,
+        "cache_write_tokens": 0,
+        "api_call_count": 30,
+        "messages": [{"role": "user", "content": "solve the task"}],
+    }
+    with tempfile.TemporaryDirectory() as tmp:
+        logs = Path(tmp)
+        (logs / "hermes-session.jsonl").write_text(json.dumps(session), encoding="utf-8")
+        agent = Hermes(logs, model_name="local/m", base_url="http://x/v1")
+        ctx = AgentContext()
+        agent.populate_context_post_run(ctx)
+        check("hermes input includes cache", ctx.n_input_tokens, 34919 + 635146)
+        check("hermes cache reported too", ctx.n_cache_tokens, 635146)
+        # reasoning is generated like output and is billed as such.
+        check("hermes output includes reasoning", ctx.n_output_tokens, 4540 + 60)
+        # The invariant that makes the sum correct: cache reads are a subset of
+        # the prompt, so the prompt total can never be smaller than the cache.
+        check("hermes prompt total >= cache",
+              ctx.n_input_tokens >= ctx.n_cache_tokens, True)
+
+
 def test_hermes() -> None:
     session = {"messages": [
         {"role": "user", "content": "solve the task"},
@@ -207,10 +243,16 @@ def test_opencode() -> None:
         agent = OpenCode(logs, model_name="local/test-model", base_url=ENDPOINT)
         ctx = AgentContext()
         agent.populate_context_post_run(ctx)
-        check("opencode sums input", ctx.n_input_tokens, 20000)
+        # opencode's `input` is net of cache reads -- its own step_finish
+        # arithmetic says so, since {"total": 7687, "input": 30, "output": 91,
+        # "cache": {"read": 7566}} only balances that way -- and Harbor's
+        # n_input_tokens is the total including cache. So 20000 + 8000.
+        check("opencode input includes cache", ctx.n_input_tokens, 28000)
         # Reasoning tokens are generated and billed like output.
         check("opencode folds reasoning into output", ctx.n_output_tokens, 750)
         check("opencode reports cache separately", ctx.n_cache_tokens, 8000)
+        check("opencode prompt total >= cache",
+              ctx.n_input_tokens >= ctx.n_cache_tokens, True)
 
     # Stream truncated before the final event: the export must cover for it.
     with tempfile.TemporaryDirectory() as tmp:
@@ -376,6 +418,7 @@ def test_context_window_reaches_every_harness() -> None:
 if __name__ == "__main__":
     test_omp()
     test_hermes_real_export()
+    test_hermes_session_totals_include_cache()
     test_hermes()
     test_configs()
     test_opencode()

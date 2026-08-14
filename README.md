@@ -16,14 +16,19 @@ that measurement repeatable on your own hardware and puts every run on one page.
 - **Model**: whatever your endpoint serves. Anything OpenAI-compatible
   (llama-server, vLLM, Ollama, LM Studio, TGI, SGLang) or OpenRouter. Swap the
   weights and re-run; the rig fingerprints them so runs can't be mislabeled.
-- **Harnesses**: six out of the box:
+- **Harnesses**: seven out of the box:
   [hermes-agent](https://github.com/NousResearch/hermes-agent),
   [minion](https://github.com/Sentdex/minion),
+  [dmfa-minion](https://github.com/danaug23/dmfa-minion),
   [oh-my-pi](https://github.com/can1357/oh-my-pi),
   [opencode](https://github.com/anomalyco/opencode),
   [Claude Code](https://github.com/anthropics/claude-code), and
   [Codex CLI](https://github.com/openai/codex). Adding another is one YAML
   block, plus a Python adapter only when the harness needs one.
+
+  `dmfa-minion` is a fork of `minion` and shares its adapter; the catalog rows
+  differ only by `repo` and `version`, which is what makes the pair a clean
+  two-row experiment rather than two separate measurements.
 
   The last two are the vendor CLIs, pointed at *your* model rather than at
   Anthropic or OpenAI, no account, no key, no proxy. That works because they
@@ -929,6 +934,7 @@ Each harness is given it in the key that harness actually reads:
 | oh-my-pi | `contextWindow`, `maxTokens` | In the generated `models.yml` |
 | opencode | `limit.context`, `limit.output` | In the generated `opencode.json` |
 | minion | `MINION_MAX_TOKENS` only | Reads `/v1/models` and `/props` from the server itself, the same source this rig probes, so there is nothing to pass and no second setting to disagree with it |
+| dmfa-minion | `MINION_MAX_TOKENS` only | Same adapter, same probe as `minion` |
 | Claude Code | `CLAUDE_CODE_MAX_CONTEXT_TOKENS`, `CLAUDE_CODE_MAX_OUTPUT_TOKENS` | Sizes auto-compaction from a built-in table of model ids. A self-hosted model is not in it, so it assumes 200K and says so, set this or it works to a window the server does not have |
 | Codex | `model_context_window` | Config file only; there is no environment variable for it, which is the entire reason `harnesses/codex.py` exists |
 
@@ -993,6 +999,7 @@ mention, found by running the CLI and reading the source:
 |---|---|
 | hermes-agent | `model.base_url` plus a local-server `provider`; it discards a non-loopback base URL otherwise, and an empty key aborts before the request is built. |
 | minion | A *named source* (`MINION_SOURCE_<NAME>_BASE_URL`), not a single base URL, and `--yolo` for approvals. One-shot saves no session, so usage comes from its traffic log. |
+| dmfa-minion | Everything `minion` needs. The adapter's `repo` kwarg selects which fork to install, so one adapter serves both rows. |
 | oh-my-pi | Install the release binary; the npm package needs Bun. Every model role must be pinned or a subagent calls a cloud provider. |
 | opencode | `--auto` and `--pure`. Its token stream can end without the final `step_finish`, so the exported session is the fallback. |
 | Claude Code | `ANTHROPIC_BASE_URL` must **not** end in `/v1`, the client appends `/v1/messages` itself, and it has to be set on the harbor process, because the built-in agent reads that one straight from `os.environ`. |

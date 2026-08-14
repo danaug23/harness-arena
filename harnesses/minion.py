@@ -83,6 +83,12 @@ class Minion(BaseInstalledAgent):
         *args: Any,
         base_url: str | None = None,
         api_key: str = "sk-noop",
+        # Which minion to install. Upstream by default; a fork is the point of
+        # having this at all -- comparing a fork against the original is a
+        # two-row experiment, and without it the only way to benchmark a fork
+        # is to edit this file, which makes the two runs incomparable for a
+        # reason that has nothing to do with the fork.
+        repo: str | None = None,
         # minion probes the context window itself -- against a llama.cpp server
         # it reads /v1/models and /props, the same source the runner probes, so
         # there is nothing to pass and no second setting that could disagree.
@@ -96,6 +102,7 @@ class Minion(BaseInstalledAgent):
         # minion's own default for a local server, which ignores the value.
         self._api_key = api_key or "sk-noop"
         self._max_tokens = int(max_tokens or 0) or None
+        self._repo = (repo or _REPO).strip()
 
     # ------------------------------------------------------------------
     # Identity
@@ -172,7 +179,7 @@ class Minion(BaseInstalledAgent):
         # trial starts, which is how an upstream push lands mid-run.
         ref = shlex.quote(self._version) if self._version else ""
         clone = (
-            f'if ! git clone {_REPO} {_INSTALL_DIR} >>"$log" 2>&1; then '
+            f'if ! git clone {self._repo} {_INSTALL_DIR} >>"$log" 2>&1; then '
             "  echo 'minion install: git clone failed'; "
             '  tail -n 30 "$log" 2>/dev/null || true; exit 1; '
             "fi; "
@@ -181,7 +188,7 @@ class Minion(BaseInstalledAgent):
             '  tail -n 30 "$log" 2>/dev/null || true; exit 1; '
             "fi; "
         ) if self._version else (
-            f'if ! git clone --depth 1 {_REPO} {_INSTALL_DIR} >>"$log" 2>&1; then '
+            f'if ! git clone --depth 1 {self._repo} {_INSTALL_DIR} >>"$log" 2>&1; then '
             "  echo 'minion install: git clone failed'; "
             '  tail -n 30 "$log" 2>/dev/null || true; exit 1; '
             "fi; "

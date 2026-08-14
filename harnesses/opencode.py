@@ -389,7 +389,17 @@ class OpenCode(BaseInstalledAgent):
         totals = self._stream_totals() or self._export_totals()
         if not totals:
             return
-        context.n_input_tokens = totals["input"]
+        # opencode's `input` is NET of cache reads; Harbor's n_input_tokens is
+        # the total *including* cache, as omp and minion already report it. Sum
+        # them so one number means one thing across the catalog.
+        #
+        # opencode's own event arithmetic settles which convention it uses --
+        # a step_finish carrying {"total": 7687, "input": 30, "output": 91,
+        # "cache": {"read": 7566}} only balances if input excludes the cache
+        # read. Unsummed, a 25-task run reported 1.87M input against 32.6M
+        # cache read: a prompt total 18x smaller than the real one, feeding
+        # every cost-per-solve number downstream.
+        context.n_input_tokens = totals["input"] + totals["cache_read"]
         # Reasoning tokens are billed and generated like output, so they belong
         # in the output count rather than being silently dropped.
         context.n_output_tokens = totals["output"] + totals["reasoning"]

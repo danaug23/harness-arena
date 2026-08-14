@@ -520,6 +520,7 @@ for _hid, _spec in _catalog["harnesses"].items():
 # from the dashboard into a diff nobody asked for.
 from bench.registry import HEADER, save  # noqa: E402
 
+
 def _lf(text: str) -> str:
     """Content without the line-ending question.
 

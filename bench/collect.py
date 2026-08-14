@@ -128,6 +128,31 @@ def _is_resolved(verifier_result: dict[str, Any] | None) -> tuple[bool, float | 
     return all(v >= 1.0 for v in values), score
 
 
+def _repaired_input(ctx: dict[str, Any]) -> float:
+    """``n_input_tokens`` for one agent result, repairing the pre-0.1.10 form.
+
+    Cache reads are a *subset* of a request's prompt, so a well-formed record
+    always has ``n_input_tokens >= n_cache_tokens``. Until 0.1.10 the hermes and
+    opencode adapters reported input *net* of cache while omp, minion, codex and
+    claude-code reported it inclusive, so those two runs violate that invariant
+    and understate their prompt totals -- by 18x on a measured 25-task opencode
+    run (1.87M reported against 32.6M cache read).
+
+    The adapters are fixed, but runs already on disk keep whatever they were
+    written with, and those are exactly the runs someone is comparing. The
+    violated invariant identifies them without a version stamp or a guess: no
+    correctly-recorded trial can land in this branch, because doing so would
+    mean a request read more cache than it had prompt.
+    """
+    value = ctx.get("n_input_tokens")
+    if not isinstance(value, (int, float)):
+        return 0
+    cache = ctx.get("n_cache_tokens")
+    if isinstance(cache, (int, float)) and cache > value:
+        return value + cache
+    return value
+
+
 def _token_totals(result: dict[str, Any]) -> dict[str, Any]:
     contexts: list[dict[str, Any]] = []
     agent_result = result.get("agent_result")
@@ -143,7 +168,7 @@ def _token_totals(result: dict[str, Any]) -> dict[str, Any]:
         for key in ("n_input_tokens", "n_output_tokens", "cost_usd"):
             value = ctx.get(key)
             if isinstance(value, (int, float)):
-                totals[key] += value
+                totals[key] += _repaired_input(ctx) if key == "n_input_tokens" else value
                 seen = True
     if not seen:
         return {"n_input_tokens": None, "n_output_tokens": None, "cost_usd": None}

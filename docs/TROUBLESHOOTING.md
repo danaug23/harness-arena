@@ -304,6 +304,44 @@ a `usage` key**. The real numbers are session-level aggregates on the record its
 Both are upstream bugs inherited by subclassing. `harnesses/hermes.py` drops the filter and
 reads the session totals, still calling `super()` for the ATIF trajectory.
 
+### hermes and opencode understated their prompt totals by 18x
+
+**Symptom.** Nothing looked broken. The efficiency panel rendered, every number was
+plausible, and hermes and opencode simply appeared to be the cheapest harnesses in the
+catalog by an enormous margin — 1.69M and 1.87M prompt tokens against codex's 90M for the
+same 25 tasks.
+
+**Cause.** `AgentContext.n_input_tokens` is the prompt total *including* cache reads. omp,
+minion, codex and claude-code all report it that way. hermes and opencode report input
+*net* of cache, and their adapters passed that through unchanged, so two rows of the
+comparison were counting a different thing from the other four.
+
+The hermes adapter said so in a comment: against a local llama-server both cache counters
+read 0, so whether hermes counted cache inside its input was unobservable, and reporting
+them separately was the conservative choice. That stopped being true — llama.cpp reports
+cached tokens now, and the gap is most of the number.
+
+**Diagnosis.** Cache reads are a *subset* of a request's prompt, so any trial with
+`n_cache_tokens > n_input_tokens` is recording input net of cache. It is arithmetic, not a
+judgement call:
+
+```bash
+# hermes, crack-7z-hash: 34,919 input against 635,146 cache read over 30 calls.
+# A 34,919-token prompt total would mean each call read 21K of cache it never had.
+python -c "import json;r=json.load(open('runs/<job>/<trial>/result.json'));a=r['agent_result'];print(a['n_input_tokens'], a['n_cache_tokens'])"
+```
+
+opencode settles it outright — its own `step_finish` totals only balance one way:
+
+```json
+{"total": 7687, "input": 30, "output": 91, "cache": {"write": 0, "read": 7566}}
+```
+
+**Fix.** Both adapters now sum input and cache read. Runs already on disk keep whatever
+they were written with, so `bench/collect.py` repairs the old form on read, using the same
+invariant: `n_input_tokens < n_cache_tokens` cannot occur in a correctly recorded trial.
+Output tokens were never affected, so any comparison drawn on output alone still stands.
+
 ### omp: log is 0 bytes so nothing can be parsed
 
 See [Logs and liveness](#logs-and-liveness), `grep` buffering. Once fixed, omp's usage parses
