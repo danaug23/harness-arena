@@ -280,8 +280,9 @@ with no runtime prerequisites.
 
 ## Token accounting
 
-Both adapters reported **zero tokens** at first, in different ways. Neither raised an error;
-the efficiency panel was simply empty.
+hermes and omp each reported **zero tokens** at first, in different ways. Neither raised an
+error; the efficiency panel was simply empty. A third failure mode -- input counted net of
+cache -- came later and is the one that looked right, below.
 
 ### hermes: session export writes a 0-byte file
 

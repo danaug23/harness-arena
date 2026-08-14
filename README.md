@@ -17,9 +17,9 @@ that measurement repeatable on your own hardware and puts every run on one page.
   (llama-server, vLLM, Ollama, LM Studio, TGI, SGLang) or OpenRouter. Swap the
   weights and re-run; the rig fingerprints them so runs can't be mislabeled.
 - **Harnesses**: seven out of the box:
-  [hermes-agent](https://github.com/NousResearch/hermes-agent),
-  [minion](https://github.com/Sentdex/minion),
   [dmfa-minion](https://github.com/danaug23/dmfa-minion),
+  [minion](https://github.com/Sentdex/minion),
+  [hermes-agent](https://github.com/NousResearch/hermes-agent),
   [oh-my-pi](https://github.com/can1357/oh-my-pi),
   [opencode](https://github.com/anomalyco/opencode),
   [Claude Code](https://github.com/anthropics/claude-code), and
@@ -930,11 +930,11 @@ Each harness is given it in the key that harness actually reads:
 
 | Harness | Key | Notes |
 |---|---|---|
+| dmfa-minion | `MINION_MAX_TOKENS` only | Same adapter, same probe as `minion` |
+| minion | `MINION_MAX_TOKENS` only | Reads `/v1/models` and `/props` from the server itself, the same source this rig probes, so there is nothing to pass and no second setting to disagree with it |
 | hermes | `model.context_length`, `model.max_tokens` | Auto-detects otherwise, and its own example config names a local server with a custom `num_ctx` as a case where that goes wrong |
 | oh-my-pi | `contextWindow`, `maxTokens` | In the generated `models.yml` |
 | opencode | `limit.context`, `limit.output` | In the generated `opencode.json` |
-| minion | `MINION_MAX_TOKENS` only | Reads `/v1/models` and `/props` from the server itself, the same source this rig probes, so there is nothing to pass and no second setting to disagree with it |
-| dmfa-minion | `MINION_MAX_TOKENS` only | Same adapter, same probe as `minion` |
 | Claude Code | `CLAUDE_CODE_MAX_CONTEXT_TOKENS`, `CLAUDE_CODE_MAX_OUTPUT_TOKENS` | Sizes auto-compaction from a built-in table of model ids. A self-hosted model is not in it, so it assumes 200K and says so, set this or it works to a window the server does not have |
 | Codex | `model_context_window` | Config file only; there is no environment variable for it, which is the entire reason `harnesses/codex.py` exists |
 
@@ -997,9 +997,9 @@ mention, found by running the CLI and reading the source:
 
 | Harness | What it needed |
 |---|---|
-| hermes-agent | `model.base_url` plus a local-server `provider`; it discards a non-loopback base URL otherwise, and an empty key aborts before the request is built. |
-| minion | A *named source* (`MINION_SOURCE_<NAME>_BASE_URL`), not a single base URL, and `--yolo` for approvals. One-shot saves no session, so usage comes from its traffic log. |
 | dmfa-minion | Everything `minion` needs. The adapter's `repo` kwarg selects which fork to install, so one adapter serves both rows. |
+| minion | A *named source* (`MINION_SOURCE_<NAME>_BASE_URL`), not a single base URL, and `--yolo` for approvals. One-shot saves no session, so usage comes from its traffic log. |
+| hermes-agent | `model.base_url` plus a local-server `provider`; it discards a non-loopback base URL otherwise, and an empty key aborts before the request is built. |
 | oh-my-pi | Install the release binary; the npm package needs Bun. Every model role must be pinned or a subagent calls a cloud provider. |
 | opencode | `--auto` and `--pure`. Its token stream can end without the final `step_finish`, so the exported session is the fallback. |
 | Claude Code | `ANTHROPIC_BASE_URL` must **not** end in `/v1`, the client appends `/v1/messages` itself, and it has to be set on the harbor process, because the built-in agent reads that one straight from `os.environ`. |
@@ -1163,8 +1163,8 @@ bit as authoritative as a real comparison.
 
 **Harness defaults are part of the harness.** Each runs with its own default
 thinking effort, turn limits and toolset, that is the thing being measured, and
-it is what you would actually get if you used it. Both adapters disable
-persistent memory/learning, without which task N would be solved by an agent
+it is what you would actually get if you used it. The adapters disable
+persistent memory/learning wherever a harness has it, without which task N would be solved by an agent
 shaped by tasks 1..N-1 and the benchmark would measure accumulated memory rather
 than the harness.
 

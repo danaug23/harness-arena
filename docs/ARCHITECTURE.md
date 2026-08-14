@@ -310,8 +310,10 @@ survives through `exec → sh -c → pipeline`. Where a positional argument is u
 **Disable persistent memory.** A harness that learns across sessions would have task N solved
 by an agent shaped by tasks 1..N-1, measuring accumulated memory rather than the harness.
 
-**Verify the token path against real output.** Both adapters' token accounting was wrong in
-ways synthetic tests could not catch, see [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
+**Verify the token path against real output.** Every adapter's token accounting has been
+wrong at least once, in ways synthetic tests could not catch: two reported zero, and two more
+reported input net of cache while the rest reported it inclusive -- understating their prompt
+totals by 18x without erroring. See [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
 
 ---
 
@@ -367,8 +369,8 @@ end. That is what makes the dashboard live.
 ## Design decisions
 
 **Why subclass Harbor's agents instead of writing from scratch.** The install paths, error
-classification and trajectory conversion are substantial and already correct. Both adapters
-override only what is actually wrong, for hermes, config generation and the CLI invocation.
+classification and trajectory conversion are substantial and already correct. Each adapter
+overrides only what is actually wrong, for hermes, config generation and the CLI invocation.
 
 **Why the registry is YAML and not Python.** Adding a harness should not require reading the
 runner. Everything harness-specific, agent reference, model reference format, env vars,

@@ -1,7 +1,7 @@
 """Harbor agent adapter for Sentdex's minion.
 
 minion is a single-file Python agent built for self-hosted models, and it is the
-easiest of the four to drive: it ships a headless mode written for exactly this
+easiest harness here to drive: it ships a headless mode written for exactly this
 purpose. From its source::
 
     # `--prompt-file <path>` (or `-f <path>`) reads the full task instruction

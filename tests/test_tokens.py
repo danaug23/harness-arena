@@ -1,4 +1,4 @@
-"""Verify both adapters' token accounting against synthetic agent logs.
+"""Verify every adapter's token accounting against synthetic agent logs.
 
 Token counts are the one thing a real run cannot cheaply validate: a trial takes
 hours, and a silent zero would make the efficiency panel quietly wrong rather

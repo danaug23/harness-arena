@@ -23,6 +23,18 @@
 # that path rewrites the file from parsed YAML and re-emits only this header.
 
 harnesses:
+  dmfa-minion:
+    label: dmfa-minion
+    vendor: danaug23
+    repo: https://github.com/danaug23/dmfa-minion
+    agent: harnesses.minion:Minion
+    model_ref: local/{model_id}
+    version: ddb148a4a7b31f3057bc7eca2976d76a9ad4f28a
+    agent_kwargs:
+      base_url: '{base_url}'
+      api_key: '{api_key}'
+      max_tokens: '{max_tokens}'
+      repo: https://github.com/danaug23/dmfa-minion
   hermes:
     label: Hermes Agent
     vendor: Nous Research
@@ -47,18 +59,6 @@ harnesses:
       base_url: '{base_url}'
       api_key: '{api_key}'
       max_tokens: '{max_tokens}'
-  dmfa-minion:
-    label: dmfa-minion
-    vendor: danaug23
-    repo: https://github.com/danaug23/dmfa-minion
-    agent: harnesses.minion:Minion
-    model_ref: local/{model_id}
-    version: ddb148a4a7b31f3057bc7eca2976d76a9ad4f28a
-    agent_kwargs:
-      base_url: '{base_url}'
-      api_key: '{api_key}'
-      max_tokens: '{max_tokens}'
-      repo: https://github.com/danaug23/dmfa-minion
   omp:
     label: oh-my-pi
     vendor: can1357
