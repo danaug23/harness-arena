@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "harness-arena"
 dynamic = ["version"]
-description = "Benchmark agent harnesses against a model, on Terminal-Bench 2."
+description = "Benchmark agent harnesses against one model, on any Harbor dataset."
 authors = [{ name = "Dan August" }]
 maintainers = [{ name = "Dan August" }]
 readme = "README.md"

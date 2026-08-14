@@ -1011,7 +1011,7 @@ textarea { resize: vertical; min-height: 68px; line-height: 1.45; }
   <div class="head-inner">
     <div class="brand">
       <h1>harness&#8203;-arena</h1>
-      <p class="tagline">Terminal-Bench 2 &middot; one model, many harnesses</p>
+      <p class="tagline">any model &middot; many harnesses &middot; many benchmarks</p>
     </div>
     <div class="live" id="live"><span class="dot"></span><span id="live-text">connecting</span></div>
   </div>
@@ -2879,7 +2879,7 @@ function renderRun() {
         <div class="field">
           <label for="run-subset">Task subset</label>
           <select id="run-subset">
-            <option value="">full dataset (89 tasks)</option>
+            <option value="">full dataset (every task)</option>
             ${(s.subsets || []).map((n) => `<option value="${esc(n)}">${esc(n)}</option>`).join("")}
           </select>
         </div>
@@ -2919,7 +2919,8 @@ function renderRun() {
         <div>
           <label for="run-allow-hosts">Send the egress allowlist</label>
           <div class="hint">Only for datasets that restrict network access during the
-            agent phase. Terminal-Bench 2 does not.</div>
+            agent phase. Terminal-Bench 2 does not; check your dataset before
+            enabling it.</div>
         </div>
       </div>
       ${(() => {
@@ -3039,7 +3040,7 @@ function wireRun() {
     const spec = runSpecFromForm();
     const scope = spec.subset ? `subset “${spec.subset}”`
       : spec.n_tasks ? `the first ${spec.n_tasks} task(s)`
-      : "the full 89-task dataset";
+      : "the full dataset";
     const who = spec.harnesses.length ? spec.harnesses.join(", ") : "every harness";
     if (!confirm(
       `Start a benchmark?\n\n  ${who}\n  ${scope}\n  timeout multiplier ${spec.agent_timeout_multiplier}\n\n`
