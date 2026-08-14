@@ -29,7 +29,7 @@ harnesses:
     repo: https://github.com/danaug23/dmfa-minion
     agent: harnesses.minion:Minion
     model_ref: local/{model_id}
-    version: 9bdcbb7b480841f9d8864762de60e2346e58b274
+    version: ccccdcdf53627b8399c8920fbd83636ed64cc1a9
     agent_kwargs:
       base_url: '{base_url}'
       api_key: '{api_key}'
