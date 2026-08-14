@@ -465,6 +465,11 @@ const SERVER_STATE = {
               n_attempts: 1, agent_timeout_multiplier: 16.0,
               environment_build_timeout_multiplier: 4.0 },
   editable_defaults: ["agent_timeout_multiplier", "n_concurrent"],
+  datasets: [
+    { id: "terminal-bench@2.0", label: "Terminal-Bench 2", tasks: 89,
+      image_repo: "alexgshaw", image_tag: "20251031" },
+    { id: "aider/aider-polyglot", label: "Aider Polyglot", tasks: 225 },
+  ],
   subsets: ["stratified-25"],
   supervisor: { active: false, job: null },
   runs_dir: "/repo/runs",
@@ -475,6 +480,30 @@ vm.runInContext("cp.server = SRV; state.data = SEED;", ctx);
 
 run("setup tab", "renderSetup()", 800);
 run("run tab", "renderRun()", 800);
+{
+  const html = vm.runInContext("renderRun()", ctx);
+  const checks = [
+    ["benchmark dropdown renders", /id="run-dataset"/.test(html)],
+    ["  lists a catalog entry", /aider\/aider-polyglot/.test(html)],
+    ["  shows the task count", /225 tasks/.test(html)],
+    ["  preselects the catalog default",
+     /value="terminal-bench@2\.0"\s+selected/.test(html)],
+  ];
+  for (const [label, ok] of checks) {
+    console.log(`${ok ? "PASS" : "FAIL"}  ${label}`);
+    if (!ok) failed++;
+  }
+}
+{
+  // A catalog with no datasets must still render a usable form rather than an
+  // empty select the user cannot start a run from.
+  vm.runInContext("cp.server.datasets = [];", ctx);
+  const html = vm.runInContext("renderRun()", ctx);
+  const ok = /id="run-dataset"/.test(html) && /catalog default/.test(html);
+  console.log(`${ok ? "PASS" : "FAIL"}  empty dataset catalog falls back cleanly`);
+  if (!ok) failed++;
+  vm.runInContext("cp.server.datasets = SRV.datasets;", ctx);
+}
 run("harnesses tab", "renderHarnesses()", 800);
 run("maintenance tab", "renderMaintenance()", 800);
 

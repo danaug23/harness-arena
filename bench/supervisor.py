@@ -205,6 +205,7 @@ class Supervisor:
         self,
         *,
         harnesses: Iterable[str] | None = None,
+        dataset: str | None = None,
         subset: str | None = None,
         n_tasks: int | None = None,
         tasks: Iterable[str] | None = None,
@@ -240,6 +241,12 @@ class Supervisor:
             ]
             for harness in harness_list:
                 argv += ["--harness", harness]
+            # Omitted rather than defaulted: the runner already falls back to
+            # the catalog's `defaults.dataset`, and passing a value here would
+            # pin the UI's idea of the default into every run, so changing the
+            # catalog would silently stop affecting runs started from the page.
+            if dataset:
+                argv += ["--dataset", dataset]
             if subset:
                 argv += ["--subset", subset]
             if n_tasks:

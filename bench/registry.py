@@ -52,6 +52,14 @@ HEADER = """\
 # version (claude-code, codex), release version (opencode). Bumping one is
 # deliberate -- re-run that harness before comparing across the change.
 #
+# `datasets:` is the benchmark catalog the dashboard offers in its dropdown.
+# `id` is passed to `harbor run --dataset` verbatim, so it must be a dataset
+# Harbor can resolve -- see hub.harborframework.com/datasets. `tasks` is
+# display only. `image_repo`/`image_tag` are what pre-pull needs to fetch task
+# images ahead of a run; a dataset without them can still be benchmarked, it
+# just cannot be pre-pulled, because guessing an image namespace would download
+# the wrong images or nothing at all.
+#
 # Comments below this line do not survive an edit made from the dashboard:
 # that path rewrites the file from parsed YAML and re-emits only this header.
 

@@ -424,6 +424,38 @@ def test_endpoint_watchdog(root: Path) -> None:
           health_around(root / "nothing-here", sample_time), {})
 
 
+def test_dataset_reaches_the_runner(tmp: Path) -> None:
+    """The UI's benchmark dropdown must actually change what Harbor runs.
+
+    The dataset id is the whole point of multi-benchmark support and it travels
+    UI -> API -> supervisor -> `bench.runner` -> `harbor run --dataset`. This
+    asserts the supervisor link by inspecting the argv it builds, which is the
+    last place the value is still ours before it becomes a subprocess.
+    """
+    config = Config(endpoint=EndpointConfig(), runs_dir=str(tmp))
+    sup = Supervisor(config)
+    seen: dict[str, list[str]] = {}
+
+    def capture(argv, kind, harnesses=None):
+        seen["argv"] = list(argv)
+        return type("J", (), {"to_dict": lambda self: {}, "status": "done"})()
+
+    sup._launch = capture  # type: ignore[assignment]
+
+    sup.start(harnesses=["minion"], dataset="aider/aider-polyglot", dry_run=True)
+    argv = seen["argv"]
+    check("dataset is passed to the runner", "--dataset" in argv, True)
+    check("  with the selected id",
+          argv[argv.index("--dataset") + 1], "aider/aider-polyglot")
+
+    # Omitted when unset, so the catalog's defaults.dataset keeps deciding.
+    # Pinning the UI's idea of the default here would make catalog edits stop
+    # affecting runs started from the page.
+    seen.clear()
+    sup.start(harnesses=["minion"], dry_run=True)
+    check("no dataset -> flag omitted", "--dataset" in seen["argv"], False)
+
+
 if __name__ == "__main__":
     test_network_reaping()
     with tempfile.TemporaryDirectory() as raw:
@@ -435,6 +467,7 @@ if __name__ == "__main__":
         test_a_cli_run_is_recognised_across_processes(root)
         test_reaps_only_its_own_containers(root)
         test_child_env_pins_config(root)
+        test_dataset_reaches_the_runner(root)
         test_endpoint_watchdog(root)
         test_terminate_tree()
     print("\n" + ("FAILED: " + ", ".join(failures) if failures else "all checks passed"))

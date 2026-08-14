@@ -156,6 +156,35 @@ def main() -> int:
         app.config.endpoint.api_key = ""
 
         # -- input validation -------------------------------------------------
+        # -- dataset selection ----------------------------------------------
+        # The dropdown is fed from the catalog, so the page can only offer
+        # benchmarks Harbor can resolve.
+        check("state exposes the dataset catalog",
+              isinstance(state.get("datasets"), list) and len(state["datasets"]) > 0,
+              True)
+        check("  each entry has an id",
+              all(isinstance(d, dict) and d.get("id") for d in state["datasets"]),
+              True)
+        check("  the default is among them",
+              state["defaults"]["dataset"] in {d["id"] for d in state["datasets"]},
+              True)
+        # A dataset id is spliced into the harbor command line. An unknown one
+        # must fail here rather than hours later as a download error.
+        check(
+            "unknown dataset rejected",
+            call("POST", "/api/run", {"harnesses": [], "dataset": "evil/nope"})[0],
+            400,
+        )
+        check(
+            "dataset must be a string",
+            call("POST", "/api/run", {"harnesses": [], "dataset": 5})[0],
+            400,
+        )
+        # Acceptance of a *valid* dataset is asserted in test_supervisor, which
+        # owns the dry-run idiom. Starting a job here -- even a dry run -- would
+        # leave the supervisor busy and break the run-deletion and stop checks
+        # further down, which assume nothing is active.
+
         check(
             "unknown harness",
             call("POST", "/api/run", {"harnesses": ["nope"]})[0],

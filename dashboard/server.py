@@ -203,6 +203,7 @@ class App:
             ],
             "api_key_set": bool(self.config.endpoint.resolve_api_key()),
             "harnesses": catalog.get("harnesses", {}),
+            "datasets": catalog.get("datasets", []),
             "defaults": catalog.get("defaults", {}),
             "editable_defaults": sorted(registry_mod.EDITABLE_DEFAULTS),
             "subsets": subsets,
@@ -440,6 +441,24 @@ class App:
         if unknown:
             raise ApiError(f"Unknown harness(es): {', '.join(map(str, unknown))}.")
 
+        # A dataset id is spliced into the `harbor run` command line, so it is
+        # checked against the catalog rather than passed through. That also
+        # keeps the failure early and legible: an unresolvable id would
+        # otherwise surface hours later as a Harbor download error.
+        dataset = payload.get("dataset") or None
+        if dataset is not None and not isinstance(dataset, str):
+            raise ApiError("`dataset` must be a string.")
+        if dataset:
+            known_datasets = {
+                str(d.get("id")) for d in (registry_mod.load().get("datasets") or [])
+                if isinstance(d, dict) and d.get("id")
+            }
+            if dataset not in known_datasets:
+                raise ApiError(
+                    f"Unknown dataset {dataset!r}. Add it to `datasets:` in "
+                    f"registry.yaml first."
+                )
+
         subset = payload.get("subset") or None
         if subset is not None and not isinstance(subset, str):
             raise ApiError("`subset` must be a string.")
@@ -463,6 +482,7 @@ class App:
         try:
             job = self.supervisor.start(
                 harnesses=harnesses,
+                dataset=dataset,
                 subset=subset,
                 n_tasks=_num("n_tasks", int, 1, 1000),
                 tasks=[str(t) for t in (payload.get("tasks") or [])],

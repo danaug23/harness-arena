@@ -19,6 +19,14 @@
 # version (claude-code, codex), release version (opencode). Bumping one is
 # deliberate -- re-run that harness before comparing across the change.
 #
+# `datasets:` is the benchmark catalog the dashboard offers in its dropdown.
+# `id` is passed to `harbor run --dataset` verbatim, so it must be a dataset
+# Harbor can resolve -- see hub.harborframework.com/datasets. `tasks` is
+# display only. `image_repo`/`image_tag` are what pre-pull needs to fetch task
+# images ahead of a run; a dataset without them can still be benchmarked, it
+# just cannot be pre-pulled, because guessing an image namespace would download
+# the wrong images or nothing at all.
+#
 # Comments below this line do not survive an edit made from the dashboard:
 # that path rewrites the file from parsed YAML and re-emits only this header.
 
@@ -121,6 +129,30 @@ allow_agent_hosts:
 - nodejs.org
 - pypi.org
 - files.pythonhosted.org
+datasets:
+- id: terminal-bench@2.0
+  label: Terminal-Bench 2
+  tasks: 89
+  image_repo: alexgshaw
+  image_tag: '20251031'
+- id: terminal-bench-pro/terminal-bench-pro
+  label: Terminal-Bench Pro
+  tasks: 200
+- id: aider/aider-polyglot
+  label: Aider Polyglot
+  tasks: 225
+- id: swe-bench/swe-bench-verified
+  label: SWE-bench Verified
+  tasks: 500
+- id: scale-ai/swe-bench-pro
+  label: SWE-bench Pro
+  tasks: 731
+- id: sierra-research/tau3-bench
+  label: tau3-bench
+  tasks: 375
+- id: gaia/gaia
+  label: GAIA
+  tasks: 165
 defaults:
   dataset: terminal-bench@2.0
   n_concurrent: 2

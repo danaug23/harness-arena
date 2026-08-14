@@ -2877,6 +2877,19 @@ function renderRun() {
       </div>
       <div class="row">
         <div class="field">
+          <label for="run-dataset">Benchmark</label>
+          <select id="run-dataset">
+            ${(s.datasets || []).map((d) => {
+              const id = esc(d.id);
+              const sel = d.id === (s.defaults || {}).dataset ? " selected" : "";
+              const count = d.tasks ? ` (${d.tasks} tasks)` : "";
+              return `<option value="${id}"${sel}>${esc(d.label || d.id)}${count}</option>`;
+            }).join("") || `<option value="">catalog default</option>`}
+          </select>
+          <div class="hint">Subsets and pre-pull are defined for Terminal-Bench 2;
+            on another benchmark use "first N tasks" to scope a run.</div>
+        </div>
+        <div class="field">
           <label for="run-subset">Task subset</label>
           <select id="run-subset">
             <option value="">full dataset (every task)</option>
@@ -2989,6 +3002,7 @@ function runSpecFromForm() {
     .map((el) => el.getAttribute("data-harness-pick"));
   const spec = {
     harnesses: picked,
+    dataset: val("run-dataset") || null,
     subset: val("run-subset") || null,
     agent_timeout_multiplier: num("run-mult"),
     n_concurrent: num("run-conc"),
@@ -3042,8 +3056,11 @@ function wireRun() {
       : spec.n_tasks ? `the first ${spec.n_tasks} task(s)`
       : "the full dataset";
     const who = spec.harnesses.length ? spec.harnesses.join(", ") : "every harness";
+    // Name the benchmark in the dialog: a mis-set dropdown is otherwise only
+    // discoverable hours later, from the job name.
+    const bench = spec.dataset || "the catalog default";
     if (!confirm(
-      `Start a benchmark?\n\n  ${who}\n  ${scope}\n  timeout multiplier ${spec.agent_timeout_multiplier}\n\n`
+      `Start a benchmark?\n\n  ${who}\n  ${bench}\n  ${scope}\n  timeout multiplier ${spec.agent_timeout_multiplier}\n\n`
       + `This runs Docker containers and can take many hours.`)) return;
     cp.log = [];
     act("run", "start", () => api("/api/run", { method: "POST", body: spec }),
