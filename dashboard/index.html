@@ -1011,7 +1011,7 @@ textarea { resize: vertical; min-height: 68px; line-height: 1.45; }
   <div class="head-inner">
     <div class="brand">
       <h1>harness&#8203;-arena</h1>
-      <p class="tagline">any model &middot; many harnesses &middot; many benchmarks</p>
+      <p class="tagline">your model &middot; many harnesses &middot; many benchmarks</p>
     </div>
     <div class="live" id="live"><span class="dot"></span><span id="live-text">connecting</span></div>
   </div>
@@ -3412,11 +3412,28 @@ function renderMaintenance() {
   <div class="card">
     <h2>Task images</h2>
     <div class="card-body">
-      <p>Cache every task image before your first benchmark. Harbor otherwise pulls
-         each one <em>inside</em> that trial's environment-start budget, and a cold
-         multi-GB pull can lose the task outright rather than scoring it.
-         Total is roughly 60&nbsp;GB.</p>
+      <p>Cache images before your first benchmark. Harbor otherwise fetches them
+         <em>inside</em> that trial's environment-start budget, and a cold
+         multi-GB pull can lose the task outright rather than scoring it.</p>
+      <p style="color:var(--ink-muted);font-size:12px">What gets cached depends on
+         the benchmark. Terminal-Bench 2 publishes one image per task (~60&nbsp;GB
+         for all 89). Aider Polyglot builds each environment locally, so only the
+         shared <code>buildpack-deps:jammy</code> base layer is worth pulling &mdash;
+         one image for all 225 tasks. A benchmark with neither declared in
+         <code>registry.yaml</code> cannot be pre-pulled and will say so.</p>
       <div class="row">
+        <div class="field" style="max-width:260px">
+          <label for="pre-dataset">Benchmark</label>
+          <select id="pre-dataset">
+            ${(s.datasets || []).map((d) => {
+              const sel = d.id === (s.defaults || {}).dataset ? " selected" : "";
+              const how = (d.image_repo && d.image_tag) ? " — per-task images"
+                        : (d.base_images || []).length ? " — base image only"
+                        : " — not pre-pullable";
+              return `<option value="${esc(d.id)}"${sel}>${esc(d.label || d.id)}${how}</option>`;
+            }).join("") || `<option value="">catalog default</option>`}
+          </select>
+        </div>
         <div class="field" style="max-width:260px">
           <label for="pre-subset">Subset</label>
           <select id="pre-subset">
@@ -3501,7 +3518,10 @@ function wireMaintenance() {
       + "long time. Progress appears on the Run tab.")) return;
     cp.log = [];
     act("maintenance", "prepull", () => api("/api/prepull", {
-      method: "POST", body: { subset: val("pre-subset") || null },
+      method: "POST", body: {
+        subset: val("pre-subset") || null,
+        dataset: val("pre-dataset") || null,
+      },
     }), "Pre-pull started — watch progress on the Run tab.");
   };
 

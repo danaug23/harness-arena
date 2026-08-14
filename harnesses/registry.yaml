@@ -22,10 +22,21 @@
 # `datasets:` is the benchmark catalog the dashboard offers in its dropdown.
 # `id` is passed to `harbor run --dataset` verbatim, so it must be a dataset
 # Harbor can resolve -- see hub.harborframework.com/datasets. `tasks` is
-# display only. `image_repo`/`image_tag` are what pre-pull needs to fetch task
-# images ahead of a run; a dataset without them can still be benchmarked, it
-# just cannot be pre-pulled, because guessing an image namespace would download
-# the wrong images or nothing at all.
+# display only. The remaining fields are what pre-pull needs, and which one a
+# dataset uses depends on how it ships its environments:
+#
+#   image_repo/image_tag  the dataset publishes one prebuilt image per task, so
+#                         pre-pull fetches <repo>/<task>:<tag> for every task.
+#                         Terminal-Bench 2 works this way.
+#   base_images           the dataset builds each environment locally from a
+#                         Dockerfile, so there is no per-task image to fetch.
+#                         What is worth caching is the base layer those
+#                         Dockerfiles start FROM. All 225 aider-polyglot tasks
+#                         share buildpack-deps:jammy, so one pull covers the
+#                         whole dataset.
+#
+# A dataset with neither can still be benchmarked; it just cannot be pre-pulled,
+# and guessing would fetch the wrong images or none at all.
 #
 # Comments below this line do not survive an edit made from the dashboard:
 # that path rewrites the file from parsed YAML and re-emits only this header.
@@ -141,6 +152,8 @@ datasets:
 - id: aider/aider-polyglot
   label: Aider Polyglot
   tasks: 225
+  base_images:
+  - buildpack-deps:jammy
 - id: swe-bench/swe-bench-verified
   label: SWE-bench Verified
   tasks: 500

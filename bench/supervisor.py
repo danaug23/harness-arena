@@ -268,7 +268,8 @@ class Supervisor:
 
             return self._launch(argv, kind="bench", harnesses=harness_list)
 
-    def start_prepull(self, subset: str | None = None) -> Job:
+    def start_prepull(self, subset: str | None = None,
+                      dataset: str | None = None) -> Job:
         """Cache task images ahead of a run.
 
         Shares the one-at-a-time rule with benchmarks rather than getting its own
@@ -282,6 +283,8 @@ class Supervisor:
                     "Something is already running. Wait for it or stop it first."
                 )
             argv = [sys.executable, "-m", "bench.prepull"]
+            if dataset:
+                argv += ["--dataset", dataset]
             if subset:
                 argv += ["--subset", subset]
             return self._launch(argv, kind="prepull", harnesses=[])

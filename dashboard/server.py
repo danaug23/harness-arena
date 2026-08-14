@@ -513,8 +513,19 @@ class App:
         subset = payload.get("subset") or None
         if subset and ("/" in subset or "\\" in subset or subset.startswith(".")):
             raise ApiError(f"Invalid subset name {subset!r}.")
+        # Same catalog check as a run: this id reaches a command line too.
+        dataset = payload.get("dataset") or None
+        if dataset is not None and not isinstance(dataset, str):
+            raise ApiError("`dataset` must be a string.")
+        if dataset:
+            known_datasets = {
+                str(d.get("id")) for d in (registry_mod.load().get("datasets") or [])
+                if isinstance(d, dict) and d.get("id")
+            }
+            if dataset not in known_datasets:
+                raise ApiError(f"Unknown dataset {dataset!r}.")
         try:
-            return self.supervisor.start_prepull(subset).to_dict()
+            return self.supervisor.start_prepull(subset, dataset).to_dict()
         except SupervisorError as exc:
             raise ApiError(str(exc), 409) from exc
 

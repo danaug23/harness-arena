@@ -456,6 +456,51 @@ def test_dataset_reaches_the_runner(tmp: Path) -> None:
     check("no dataset -> flag omitted", "--dataset" in seen["argv"], False)
 
 
+def test_prepull_resolves_images_per_dataset(tmp: Path) -> None:
+    """Pre-pull must fetch what the dataset actually ships, not one fixed shape.
+
+    Terminal-Bench 2 publishes an image per task, so pre-pull wants
+    <repo>/<task>:<tag>. aider-polyglot ships a Dockerfile per task and builds
+    locally -- there is no per-task image to fetch, and all 225 tasks start FROM
+    one shared base, so the whole dataset is covered by a single pull. Treating
+    the second like the first would fetch 225 images that do not exist.
+    """
+    from bench import prepull
+
+    tb = prepull.dataset_spec("terminal-bench@2.0")
+    images, kind = prepull.images_for(tb, ["alpha", "beta"])
+    check("tb2 pulls one image per task", len(images), 2)
+    check("  under the catalog's repo/tag",
+          images[0][1], f"{tb['image_repo']}/alpha:{tb['image_tag']}")
+    check("  labelled as task images", kind, "task images")
+
+    ap = prepull.dataset_spec("aider/aider-polyglot")
+    images, kind = prepull.images_for(ap, ["alpha", "beta"])
+    check("aider pulls one shared base", len(images), 1)
+    check("  which is the Dockerfile FROM", images[0][1], "buildpack-deps:jammy")
+    check("  and ignores the task list", kind, "base images")
+
+    # A dataset the catalog knows nothing about must refuse rather than invent
+    # an image name -- a wrong guess downloads the wrong thing or nothing.
+    unknown = prepull.dataset_spec("gaia/gaia")
+    images, kind = prepull.images_for(unknown, ["alpha"])
+    check("undeclared dataset pulls nothing", images, [])
+
+    # And the supervisor has to pass the choice down.
+    config = Config(endpoint=EndpointConfig(), runs_dir=str(tmp))
+    sup = Supervisor(config)
+    seen: dict[str, list[str]] = {}
+    sup._launch = lambda argv, kind, harnesses=None: (  # type: ignore[assignment]
+        seen.update(argv=list(argv))
+        or type("J", (), {"to_dict": lambda self: {}, "status": "done"})()
+    )
+    sup.start_prepull(None, "aider/aider-polyglot")
+    argv = seen["argv"]
+    check("prepull gets the dataset", "--dataset" in argv, True)
+    check("  the selected one",
+          argv[argv.index("--dataset") + 1], "aider/aider-polyglot")
+
+
 if __name__ == "__main__":
     test_network_reaping()
     with tempfile.TemporaryDirectory() as raw:
@@ -468,6 +513,7 @@ if __name__ == "__main__":
         test_reaps_only_its_own_containers(root)
         test_child_env_pins_config(root)
         test_dataset_reaches_the_runner(root)
+        test_prepull_resolves_images_per_dataset(root)
         test_endpoint_watchdog(root)
         test_terminate_tree()
     print("\n" + ("FAILED: " + ", ".join(failures) if failures else "all checks passed"))
