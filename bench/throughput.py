@@ -26,6 +26,19 @@ def _t(value: str | None) -> datetime | None:
         return None
 
 
+def _read_json(path: Path) -> dict | None:
+    """A job result that is absent, half-written or malformed is not an error.
+
+    The job-level file appears only when the run ends, and this reads runs that
+    are still going.
+    """
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--runs-dir", type=Path, default=None)
@@ -76,8 +89,30 @@ def main(argv: list[str] | None = None) -> int:
         # Anchor on the job's own start, and end at either the last completed
         # trial (finished/stopped run) or now (still running). Timing a live run
         # from an observer's start instead would report a fictional speedup.
+        #
+        # A run that simply *finished* counts as ended too. Only `stopped_at`
+        # was checked here, which the supervisor writes when a run is killed --
+        # so every naturally completed run, which is nearly all of them, was
+        # treated as still in flight and measured to now. Its elapsed then grew
+        # without bound long after the work was over, taking min/trial up with
+        # it and driving llm busy% toward zero: a 3m36s sweep of five trials
+        # read as 3.4h at 40 min/trial and 1% utilization a few hours later.
+        # Every number in this table was wrong for any run not killed by hand.
+        #
+        # Completion is taken from the *presence* of the job result's
+        # finished_at, never its value: Harbor writes that one in naive local
+        # time while the manifest records aware UTC, and subtracting across the
+        # two silently shifts the result by the machine's offset. The end
+        # instant comes from the trials, whose own timestamps are aware. See
+        # `_utc_time` in collect.py, which refuses ambiguous stamps for the same
+        # reason, and which is where `finished` is defined the same way.
         stopped = _t(manifest.get("stopped_at"))
-        end = max(finishes) if stopped else datetime.now(UTC)
+        job_result = _read_json(job / "result.json") or {}
+        n_total = job_result.get("n_total_trials")
+        finished = bool(job_result.get("finished_at")) or (
+            isinstance(n_total, int) and n_total > 0 and n >= n_total
+        )
+        end = max(finishes) if (stopped or finished) else datetime.now(UTC)
         elapsed_min = (end - started).total_seconds() / 60
         per_trial = elapsed_min / n
 
@@ -85,7 +120,7 @@ def main(argv: list[str] | None = None) -> int:
             f"{manifest.get('agent_timeout_multiplier')}x "
             f"{manifest.get('n_concurrent', 1)}/{manifest.get('n_concurrent_agents') or 1}"
         )
-        status = "stopped" if stopped else "running"
+        status = "stopped" if stopped else "complete" if finished else "running"
         # Share of wall clock the model spent generating. This is what pipelining
         # is actually for, and unlike min/trial it stays honest mid-run: work in
         # flight is uncounted by trial-completion metrics but shows up here as

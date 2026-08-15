@@ -316,6 +316,20 @@ Two metrics per run:
 Anchors on the job's recorded `started_at`, and for a live run measures to *now*. Timing from
 an observer's start instead reports a fictional speedup.
 
+**A run that ends stops the clock**, and "ends" means stopped *or* finished. Only
+`manifest.stopped_at` was checked, which the supervisor writes when a run is killed — so every
+naturally completed run stayed "running", kept measuring to `now`, and its elapsed grew
+without bound after the work was over, taking min/trial up and llm busy % down with it. A
+measured 3m36s sweep of five trials read as 3.4h at 40.3 min/trial and 1% utilization a few
+hours later; every row in the table was wrong for any run not killed by hand. `collect.py`
+had this right from the start — `_wall_clock` ends on `stopped_at or job_result.finished_at`
+— so the dashboard was never affected and only this CLI was.
+
+Completion is taken from the **presence** of the job result's `finished_at`, never its value:
+Harbor writes that one in naive local time while the manifest records aware UTC, and
+subtracting across the two shifts the answer by the machine's offset. The end *instant* comes
+from the trials, whose stamps carry a zone. See `_utc_time` in `collect.py`.
+
 ### `bench/prepull.py` / `bench/make_subset.py`
 
 `prepull` pulls `<repo>/<task>:<tag>` for every task in a subset, skipping cached ones,

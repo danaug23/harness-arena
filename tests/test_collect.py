@@ -642,6 +642,130 @@ def test_appending_to_a_log_does_not_move_the_agent_start(tmp: Path) -> None:
           after < log.stat().st_mtime - 1.0, True)
 
 
+def test_throughput_stops_the_clock_when_a_run_ends(tmp: Path) -> None:
+    """A finished run is not a running one, and only `stopped_at` said so.
+
+    bench/throughput.py ended its window at `now` unless the manifest carried a
+    `stopped_at`, which the supervisor writes only when a run is *killed*. Every
+    run that simply finished -- nearly all of them -- was therefore treated as
+    still in flight, so its elapsed grew without bound long after the work was
+    over, dragging min/trial up and llm busy% down with it.
+
+    Measured on a real seven-harness sweep a few hours after it ended: a 3m36s
+    run of five trials reported 3.4h elapsed, 40.3 min/trial and 1% utilization.
+    Every number in the table was wrong for any run not killed by hand.
+
+    The completion signal is the job result's `finished_at`, used for its
+    *presence* only. Harbor writes that one in naive local time while the
+    manifest records aware UTC, so subtracting across the two shifts the answer
+    by the machine's offset -- five hours here. This fixture makes the naive
+    stamp deliberately absurd to prove it is never used as a value.
+    """
+    import contextlib
+    import io
+
+    from bench import throughput
+
+    job = tmp / "someharness__m__tb2__full__20260815T091000Z"
+    job.mkdir(parents=True)
+    (job / "harness-bench.json").write_text(json.dumps({
+        "harness": "someharness", "harness_label": "Some Harness",
+        "model": {"label": "M", "fingerprint": "fp1"},
+        "n_concurrent": 2, "n_concurrent_agents": 1,
+        "agent_timeout_multiplier": 8.0,
+        # Aware UTC, as bench.runner records it.
+        "started_at": "2026-08-15T09:10:00+00:00",
+    }), encoding="utf-8")
+
+    # Two trials, six minutes of wall clock, two of it generating.
+    for name, end, agent in (
+        ("alpha", "2026-08-15T09:13:00Z", ("09:11:00", "09:12:00")),
+        ("beta", "2026-08-15T09:16:00Z", ("09:14:00", "09:15:00")),
+    ):
+        trial = job / f"{name}__x"
+        trial.mkdir(parents=True)
+        (trial / "result.json").write_text(json.dumps({
+            "task_name": name,
+            "verifier_result": {"rewards": {"reward": 0.0}},
+            "started_at": "2026-08-15T09:10:00Z",
+            "finished_at": end,
+            "agent_execution": {
+                "started_at": f"2026-08-15T{agent[0]}Z",
+                "finished_at": f"2026-08-15T{agent[1]}Z",
+            },
+        }), encoding="utf-8")
+
+    # Harbor's job-level result: naive local time, hours away from the aware
+    # stamps above. Its presence ends the run; its value must never be used.
+    (job / "result.json").write_text(json.dumps({
+        "n_total_trials": 2,
+        "started_at": "2026-08-15T04:10:00.000000",
+        "finished_at": "2026-08-15T04:16:00.000000",
+    }), encoding="utf-8")
+
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        throughput.main(["--runs-dir", str(job.parent)])
+    line = [ln for ln in out.getvalue().splitlines()
+            if ln.startswith("someharness")][0]
+
+    check("a finished run is not reported as running",
+          line.split()[-1], "complete")
+    # 09:10 to the last trial at 09:16 is six minutes, whatever the clock says
+    # now and whatever the naive local stamp claims.
+    check("...and its elapsed is its own, not time since it ended",
+          line.split()[-4], "0.1h")
+    check("...so min/trial is the real figure", line.split()[-3], "3.0")
+    # Two of the six minutes were spent generating.
+    check("...and utilization is measured over that window",
+          line.split()[-2], "33%")
+
+
+def test_throughput_still_runs_the_clock_on_a_live_run(tmp: Path) -> None:
+    """The other half: a run still going has to keep measuring to now.
+
+    Freezing at the last completed trial would report a run whose next trial is
+    still working as though it had finished, which is the failure the original
+    `now` behaviour existed to prevent. Only the *ending* condition was wrong.
+    """
+    import contextlib
+    import io
+    from datetime import UTC, datetime, timedelta
+
+    from bench import throughput
+
+    started = datetime.now(UTC) - timedelta(minutes=30)
+    job = tmp / "someharness__m__tb2__full__live"
+    job.mkdir(parents=True)
+    (job / "harness-bench.json").write_text(json.dumps({
+        "harness": "someharness", "harness_label": "Some Harness",
+        "model": {"label": "M", "fingerprint": "fp1"},
+        "agent_timeout_multiplier": 8.0,
+        "started_at": started.isoformat(),
+    }), encoding="utf-8")
+    trial = job / "alpha__x"
+    trial.mkdir(parents=True)
+    (trial / "result.json").write_text(json.dumps({
+        "task_name": "alpha",
+        "verifier_result": {"rewards": {"reward": 0.0}},
+        "started_at": started.isoformat(),
+        "finished_at": (started + timedelta(minutes=5)).isoformat(),
+    }), encoding="utf-8")
+    # Ten of twenty trials done, and no job-level result yet: still going.
+    (job / "result.json").write_text(json.dumps({"n_total_trials": 20}),
+                                     encoding="utf-8")
+
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        throughput.main(["--runs-dir", str(job.parent)])
+    line = [ln for ln in out.getvalue().splitlines()
+            if ln.startswith("someharness")][0]
+
+    check("a live run still reads as running", line.split()[-1], "running")
+    # Half an hour in, not the five minutes its one finished trial took.
+    check("...and is measured to now", line.split()[-4], "0.5h")
+
+
 def test_a_submission_the_verifier_could_not_score_is_a_failure(tmp: Path) -> None:
     """A build failure is a wrong answer, not a broken rig.
 
@@ -1007,6 +1131,10 @@ if __name__ == "__main__":
         test_appending_to_a_log_does_not_move_the_agent_start(Path(scratch))
     with tempfile.TemporaryDirectory() as scratch:
         test_endpoint_faults_leave_the_denominator(Path(scratch))
+    with tempfile.TemporaryDirectory() as scratch:
+        test_throughput_stops_the_clock_when_a_run_ends(Path(scratch))
+    with tempfile.TemporaryDirectory() as scratch:
+        test_throughput_still_runs_the_clock_on_a_live_run(Path(scratch))
     with tempfile.TemporaryDirectory() as scratch:
         test_a_submission_the_verifier_could_not_score_is_a_failure(Path(scratch))
     with tempfile.TemporaryDirectory() as scratch:
