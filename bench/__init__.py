@@ -18,7 +18,7 @@ from pathlib import Path
 
 #: Single source of truth. pyproject reads this, so a release cannot ship
 #: a wheel whose --version disagrees with the version on the index.
-__version__ = "0.1.17"
+__version__ = "0.1.18"
 
 #: Where the code is. In a wheel install this is site-packages.
 ROOT = Path(__file__).resolve().parent.parent
@@ -83,3 +83,35 @@ def subset_names() -> list[str]:
         if directory.is_dir():
             names.update(p.stem for p in directory.glob("*.txt"))
     return sorted(names)
+
+
+def subset_dataset(name: str) -> str | None:
+    """Which benchmark a subset's task names come from, if it says.
+
+    A subset is a list of task names, and task names only mean something inside
+    the dataset they were drawn from. `stratified-25` is 25 of Terminal-Bench
+    2's 89 tasks; handing it to aider-polyglot selects nothing that exists.
+    Nothing rejected that combination while the rig only ran one benchmark,
+    because there was only one dataset a name could belong to.
+
+    Declared in the file rather than inferred from its contents, which would
+    mean resolving every dataset to compare task lists. A subset that does not
+    say is treated as belonging to any of them -- the same answer as before this
+    existed, so a list someone already wrote keeps working.
+    """
+    try:
+        with subset_path(name).open(encoding="utf-8") as handle:
+            for line in handle:
+                if not line.startswith("#"):
+                    break
+                key, _, value = line[1:].partition(":")
+                if key.strip().lower() == "dataset":
+                    return value.strip() or None
+    except OSError:
+        return None
+    return None
+
+
+def subset_datasets() -> dict[str, str | None]:
+    """Every subset, mapped to the benchmark it belongs to (None = any)."""
+    return {name: subset_dataset(name) for name in subset_names()}

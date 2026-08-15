@@ -119,6 +119,10 @@ const data = process.argv[2]
 const stub = new Proxy({
   classList: { add() {}, remove() {}, toggle() {} },
   setAttribute() {}, getAttribute: () => null,
+  // An unfilled control, which is what every form field is under this stub.
+  // Without these, reading the form throws on `.value.trim()` rather than
+  // returning the empty spec that an untouched form should produce.
+  value: "", checked: false, options: [], selectedIndex: -1,
   style: {}, textContent: "", innerHTML: "",
   getBoundingClientRect: () => ({ width: 0, height: 0 }),
   getContext: () => null, closest: () => null,
@@ -317,6 +321,40 @@ if (!process.argv[2]) {
   vm.runInContext("state.data.runs[0].status = 'complete';", ctx);
 }
 
+// ---- the elapsed column reports the model's clock ---------------------------
+// A run's headline time is agent execution, not wall clock. The two differ by
+// the container work -- pulls, builds, harness installs, verifiers -- which is
+// the same cost for every harness on a dataset, so putting it in the headline
+// narrows every gap this rig exists to measure. Wall clock stays visible
+// underneath, because it is what the run actually cost you.
+if (!process.argv[2]) {
+  vm.runInContext(
+    "state.data.runs[0].agent_total_s = 4968;" +
+    "state.data.runs[0].wall_clock_s = 5400;" +
+    "state.data.runs[0].llm_busy_pct = 92;",
+    ctx
+  );
+  const log = vm.runInContext("renderRunLog(state.data)", ctx);
+  // 4968s of agent inside 5400s of wall. Asserted as an order, not just as two
+  // present strings: the whole change is which of the two is the headline.
+  const context = /1h 30m wall/.test(log);
+  const headline = /1h 23m/.test(log)
+    && log.indexOf("1h 23m") < log.indexOf("1h 30m wall");
+  console.log(`${headline ? "PASS" : "FAIL"}  elapsed leads with model time`);
+  if (!headline) failed++;
+  console.log(`${context ? "PASS" : "FAIL"}  ...and keeps wall clock as context`);
+  if (!context) failed++;
+
+  // A run recorded before agent time was tracked has no such field. It must
+  // still show the time it does have rather than an em dash.
+  vm.runInContext("delete state.data.runs[0].agent_total_s;", ctx);
+  const legacy = vm.runInContext("renderRunLog(state.data)", ctx);
+  const kept = /1h 30m/.test(legacy);
+  console.log(`${kept ? "PASS" : "FAIL"}  an older run still reports its wall clock`);
+  if (!kept) failed++;
+  vm.runInContext("state.data.runs[0].agent_total_s = 4968;", ctx);
+}
+
 // ---- layout ----------------------------------------------------------------
 // Every panel must claim a grid area, and every area the CSS defines must be
 // filled -- an unassigned panel silently collapses into the wrong cell.
@@ -415,6 +453,32 @@ if (!process.argv[2]) {
   console.log(`${explained ? "PASS" : "FAIL"}  quiet feed explains the buffering`);
   if (!explained) failed++;
 
+  // A trial that has not reached the agent yet reports no agent clock at all.
+  // It must say it is setting up rather than show a zero, which would claim the
+  // model had been working for no time instead of that it had not started --
+  // and it must never present the setup interval as elapsed model time, which
+  // is what charging image pulls and harness installs to the harness looked
+  // like on screen.
+  vm.runInContext(
+    `state.activity = ${feedState({ elapsed_s: null, setup_s: 214, phase: "setting up" })};`,
+    ctx
+  );
+  const settingUp = vm.runInContext("renderFeed()", ctx);
+  const named = /setting up/.test(settingUp) && !/elapsed/.test(settingUp);
+  console.log(`${named ? "PASS" : "FAIL"}  setup time is labelled setup, not elapsed`);
+  if (!named) failed++;
+
+  // And once the agent starts, the setup it cost is still reachable rather than
+  // silently dropped -- it is the number that explains the gap between a run's
+  // wall clock and its model time.
+  vm.runInContext(
+    `state.activity = ${feedState({ elapsed_s: 1320, setup_s: 214 })};`, ctx
+  );
+  const running = vm.runInContext("renderFeed()", ctx);
+  const both = /elapsed/.test(running) && /Setup took/.test(running);
+  console.log(`${both ? "PASS" : "FAIL"}  the agent clock names what it excludes`);
+  if (!both) failed++;
+
   // No run in flight -> no panel at all, not an empty box.
   vm.runInContext(`state.activity = {"active": false};`, ctx);
   const off = vm.runInContext("renderFeed()", ctx);
@@ -476,6 +540,9 @@ const SERVER_STATE = {
     { id: "aider/aider-polyglot", label: "Aider Polyglot", tasks: 225 },
   ],
   subsets: ["stratified-25"],
+  // Which benchmark each subset's task names came from. A subset is a list of
+  // names, so it only means anything on the dataset it was drawn from.
+  subset_datasets: { "stratified-25": "terminal-bench@2.0" },
   supervisor: { active: false, job: null },
   runs_dir: "/repo/runs",
 };
@@ -493,6 +560,35 @@ run("run tab", "renderRun()", 800);
     ["  shows the task count", /225 tasks/.test(html)],
     ["  preselects the catalog default",
      /value="terminal-bench@2\.0"\s+selected/.test(html)],
+
+    // How much of the benchmark to run is one exclusive choice. It used to be
+    // two independent controls joined by the word "or" in a label, while
+    // runSpecFromForm sent both and the runner honoured both -- so a run could
+    // go out as "subset stratified-25" and be silently capped at N tasks, then
+    // be recorded under the subset's name where the results view would pair it
+    // against real subset runs.
+    ["task scope is a single exclusive choice",
+     (html.match(/name="run-scope"/g) || []).length === 3],
+    ["  defaulting to the whole benchmark",
+     /value="full"[^>]*checked/.test(html)],
+    ["  with the other two inert until chosen",
+     /id="run-ntasks"[^>]*disabled/.test(html) && /id="run-subset"[^>]*disabled/.test(html)],
+
+    // A subset carries the benchmark it belongs to, so the gating survives a
+    // change of benchmark -- which does not re-render this form.
+    ["a subset declares which benchmark it belongs to",
+     /data-subset-dataset="terminal-bench@2\.0"/.test(html)],
+    ["  and is offered for that benchmark",
+     /value="stratified-25" data-subset-dataset="terminal-bench@2\.0">/.test(html)],
+
+    // The most consequential fact about a run was absent from the page that
+    // starts one, while the results view treats the model as its primary scope.
+    ["the page names the model it will benchmark",
+     /localhost:8080\/v1/.test(html)],
+
+    // Every checkbox on this tab was being drawn by the results-filter pill
+    // rule, which was never scoped to the filters.
+    ["harnesses are a labelled group", /<fieldset>/.test(html)],
   ];
   for (const [label, ok] of checks) {
     console.log(`${ok ? "PASS" : "FAIL"}  ${label}`);
@@ -509,6 +605,26 @@ run("run tab", "renderRun()", 800);
   if (!ok) failed++;
   vm.runInContext("cp.server.datasets = SRV.datasets;", ctx);
 }
+{
+  // The payload the control plane receives is the contract the Run tab's layout
+  // is not allowed to change. Reorganising a form is presentation; quietly
+  // adding or dropping a key the server acts on is not.
+  //
+  // With the DOM stubbed, no radio reads as checked, so this also pins the
+  // default: "full" -- no subset, no task cap. The bug this replaces did the
+  // opposite, sending whatever both boxes happened to hold.
+  const spec = vm.runInContext("runSpecFromForm()", ctx);
+  const keys = ["harnesses", "dataset", "subset", "agent_timeout_multiplier",
+                "n_concurrent", "n_concurrent_agents", "allow_hosts",
+                "debug_capture"];
+  const shape = keys.every((k) => k in spec);
+  console.log(`${shape ? "PASS" : "FAIL"}  the run payload keeps every key the server reads`);
+  if (!shape) failed++;
+  const exclusive = spec.subset === null && !("n_tasks" in spec);
+  console.log(`${exclusive ? "PASS" : "FAIL"}  ...and never sends a subset and a task cap together`);
+  if (!exclusive) failed++;
+}
+
 run("harnesses tab", "renderHarnesses()", 800);
 run("maintenance tab", "renderMaintenance()", 800);
 
@@ -578,6 +694,12 @@ vm.runInContext("cp.log = [];", ctx);
 vm.runInContext(
   "cp.server = { ...SRV, harnesses: {}, subsets: [], defaults: {},"
   + " supervisor: { active: false, job: null } }; state.data = { runs: [] };", ctx);
+{
+  const html = vm.runInContext("renderRun()", ctx);
+  const ok = /none defined/.test(html);
+  console.log(`${ok ? "PASS" : "FAIL"}  a checkout with no subsets says so`);
+  if (!ok) failed++;
+}
 run("run tab (no harnesses)", "renderRun()", 200);
 run("harnesses tab (empty)", "renderHarnesses()", 200);
 run("maintenance (no runs)", "renderMaintenance()", 200);

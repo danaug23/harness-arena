@@ -46,7 +46,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
-from bench import ROOT, subset_names
+from bench import ROOT, subset_datasets, subset_names
 from bench import registry as registry_mod
 from bench.activity import read_activity
 from bench.collect import build_index
@@ -207,6 +207,12 @@ class App:
             "defaults": catalog.get("defaults", {}),
             "editable_defaults": sorted(registry_mod.EDITABLE_DEFAULTS),
             "subsets": subsets,
+            # Which benchmark each subset's task names came from, so the Run tab
+            # can stop offering one that would select nothing. Sent beside
+            # `subsets` rather than replacing it: the list is the control, this
+            # is the constraint on it, and a null means "no benchmark declared,
+            # so any of them" -- which is every subset written before this.
+            "subset_datasets": subset_datasets(),
             "supervisor": self.supervisor.status(),
             "runs_dir": str(self.runs_dir),
         }

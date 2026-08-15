@@ -10,6 +10,7 @@ measuring the wrong variable. These are the rules that keep it honest.
 import json
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -25,6 +26,7 @@ from bench.activity import (  # noqa: E402
     MAX_TAIL_BYTES,
     TAIL_BYTES,
     TARGET_TEXT_CHARS,
+    agent_started_at,
     parse_entries,
     read_feed,
 )
@@ -531,6 +533,115 @@ def _write_trial(job: Path, task: str, *, resolved: bool, log: str = "",
     (trial / "result.json").write_text(json.dumps(result), encoding="utf-8")
 
 
+def test_the_clock_starts_when_the_model_does(tmp: Path) -> None:
+    """A run's headline time is the model's time, not the container's.
+
+    A trial is four phases and only one of them is the model working: pull the
+    image, build the container, install the harness, run the agent, verify.
+    Measured on a real trial, setup was 72 seconds -- and a cold image pull is
+    minutes. Charging that to the harness under test is not a rounding error in
+    the wrong direction, it is the *same* cost for every harness on a dataset,
+    so folding it in narrows every gap the rig exists to measure.
+
+    Both clocks are kept. Wall clock is what the run cost you; agent time is
+    what the harness is answerable for.
+    """
+    job = tmp / "someharness__m__20260811T000000Z"
+    job.mkdir(parents=True)
+    (job / "harness-bench.json").write_text(json.dumps({
+        "harness": "someharness", "harness_label": "Some Harness",
+        "model": {"label": "M", "fingerprint": "fp1", "total_slots": 1},
+        "n_concurrent": 1, "n_concurrent_agents": 1,
+        "started_at": "2026-08-10T04:00:00+00:00",
+    }), encoding="utf-8")
+    (job / "result.json").write_text(json.dumps({
+        "finished_at": "2026-08-09T23:03:00",
+    }), encoding="utf-8")
+
+    # Two trials, three minutes of wall clock, two minutes of agent between
+    # them. The other minute is setup and verifiers.
+    _write_trial(job, "a", resolved=True, agent_s=60)
+    _write_trial(job, "b", resolved=False, agent_s=60,
+                 started="2026-08-10T04:01:30Z", finished="2026-08-10T04:03:00Z")
+
+    run = load_run(job)
+    check("the run reports the model's own time", run["agent_total_s"], 120.0)
+    check("...and keeps the wall clock beside it", run["wall_clock_s"], 180.0)
+    check("...with the ratio between them", round(run["llm_busy_pct"], 1), 66.7)
+
+
+def test_a_trial_in_flight_advances_the_clock_but_its_setup_does_not(
+    tmp: Path,
+) -> None:
+    """The model clock has to move during a trial, and only once the model does.
+
+    Agent time comes from Harbor's own phase timestamps, which it writes when a
+    trial *ends*. Reading only those would freeze the number for the length of a
+    trial -- up to an hour -- so a working run would look like a stalled one.
+    The trial in flight is measured from the agent log instead, which Harbor
+    creates when it launches the agent, so the container work before it is not
+    on the model's account.
+    """
+    job = tmp / "someharness__m__20260811T000000Z"
+    job.mkdir(parents=True)
+    (job / "harness-bench.json").write_text(json.dumps({
+        "harness": "someharness", "harness_label": "Some Harness",
+        "model": {"label": "M", "fingerprint": "fp1"},
+        "started_at": "2026-08-10T04:00:00+00:00",
+    }), encoding="utf-8")
+    _write_trial(job, "done", resolved=True, agent_s=60)
+
+    # In flight: a trial directory with no result.json. It exists for a real
+    # interval before the agent log appears, which is the setup this test is
+    # about -- so create the directory, wait, then start the log.
+    live = job / "running__y"
+    (live / "agent").mkdir(parents=True)
+    setup_seconds = 1.5
+    time.sleep(setup_seconds)
+    (live / "agent" / "agent.txt").write_text("thinking\n", encoding="utf-8")
+
+    trial_age = time.time() - (live).stat().st_ctime
+    run = load_run(job)
+    live_s = run["agent_total_s"] - 60.0
+
+    check("the finished trial still counts in full",
+          run["agent_total_s"] > 60.0, True)
+    # The whole point: the directory is older than the agent clock by the setup
+    # interval. Asserted as a gap rather than an exact figure, because the only
+    # thing under test is that setup is outside the number.
+    check("...and the trial in flight adds only its agent time",
+          round(trial_age - live_s, 1) >= 1.0, True)
+    check("...which is not the age of its directory",
+          live_s < trial_age, True)
+
+
+def test_appending_to_a_log_does_not_move_the_agent_start(tmp: Path) -> None:
+    """The start of the agent phase must not drift as the agent writes.
+
+    `st_ctime` is the obvious way to ask when a file was created and is right on
+    exactly one platform: on Windows it is the creation time, on Linux it is the
+    inode *change* time, which every append moves forward. Reading it there
+    would report a trial two hours in as seconds old -- a clock that resets
+    itself whenever the thing it is timing makes progress, which is the one
+    failure mode that would never look like a bug in a timestamp.
+    """
+    trial = tmp / "task__z"
+    (trial / "agent").mkdir(parents=True)
+    log = trial / "agent" / "agent.txt"
+    log.write_text("first\n", encoding="utf-8")
+
+    started = agent_started_at(log)
+    time.sleep(1.1)
+    with log.open("a", encoding="utf-8") as handle:
+        handle.write("more output\n")
+    after = agent_started_at(log)
+
+    check("a growing log keeps its start time",
+          round(abs(after - started), 1), 0.0)
+    check("...which is when it was created, not when it was last written",
+          after < log.stat().st_mtime - 1.0, True)
+
+
 def test_a_submission_the_verifier_could_not_score_is_a_failure(tmp: Path) -> None:
     """A build failure is a wrong answer, not a broken rig.
 
@@ -888,6 +999,12 @@ if __name__ == "__main__":
         test_output_tokens_are_reported_per_solve_and_per_trial(Path(scratch))
     with tempfile.TemporaryDirectory() as scratch:
         test_a_grafted_rerun_scores_but_does_not_stretch_the_clock(Path(scratch))
+    with tempfile.TemporaryDirectory() as scratch:
+        test_the_clock_starts_when_the_model_does(Path(scratch))
+    with tempfile.TemporaryDirectory() as scratch:
+        test_a_trial_in_flight_advances_the_clock_but_its_setup_does_not(Path(scratch))
+    with tempfile.TemporaryDirectory() as scratch:
+        test_appending_to_a_log_does_not_move_the_agent_start(Path(scratch))
     with tempfile.TemporaryDirectory() as scratch:
         test_endpoint_faults_leave_the_denominator(Path(scratch))
     with tempfile.TemporaryDirectory() as scratch:

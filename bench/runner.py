@@ -26,7 +26,14 @@ from typing import Any
 
 import yaml
 
-from bench import REGISTRY_PATH, ROOT, WORKSPACE, subset_names, subset_path
+from bench import (
+    REGISTRY_PATH,
+    ROOT,
+    WORKSPACE,
+    subset_dataset,
+    subset_names,
+    subset_path,
+)
 from bench import registry as registry_mod
 from bench.config import DEFAULT_CONTEXT_WINDOW, Config, ConfigError, scrub
 from bench.probe import ModelIdentity, add_endpoint_args, config_from_args, describe, resolve
@@ -64,6 +71,31 @@ DEBUG_AGENT_ENV = {
 def load_registry(path: Path = REGISTRY_PATH) -> dict[str, Any]:
     with path.open(encoding="utf-8") as handle:
         return yaml.safe_load(handle)
+
+
+def check_subset_dataset(name: str, dataset: str | None) -> None:
+    """Refuse a subset whose task names belong to a different benchmark.
+
+    A subset is a list of task names, and a task name only means anything inside
+    the dataset it was drawn from: `stratified-25` is 25 of Terminal-Bench 2's
+    89 tasks, and against aider-polyglot it selects 25 tasks that do not exist.
+    Nothing rejected this while the rig ran one benchmark, because there was
+    only one dataset a name could come from -- multi-benchmark support made the
+    combination reachable from a dropdown without making it wrong-looking.
+
+    Refused here rather than left to Harbor, on the same grounds as the context
+    floor: the failure otherwise arrives after the images are pulled, and a run
+    that selects nothing is as easy to read as a run that finished.
+    """
+    declared = subset_dataset(name)
+    if declared and dataset and declared != dataset:
+        raise ConfigError(
+            f"Subset '{name}' lists tasks from {declared}, but this run is on "
+            f"{dataset}. Task names do not carry across benchmarks, so the run "
+            f"would select nothing.\n"
+            f"Use --dataset {declared}, pick a different subset, or scope this "
+            f"run with --n-tasks instead."
+        )
 
 
 def load_subset(name: str) -> list[str]:
@@ -915,6 +947,10 @@ def main(argv: list[str] | None = None) -> int:
 
     include_tasks = list(args.task or [])
     if args.subset:
+        # Before the images are pulled, not after: a subset from another
+        # benchmark selects nothing, and a run that selected nothing is
+        # indistinguishable from one that finished.
+        check_subset_dataset(args.subset, args.dataset)
         subset_tasks = load_subset(args.subset)
         include_tasks = subset_tasks + [t for t in include_tasks if t not in subset_tasks]
         print(f"\n  subset '{args.subset}': {len(subset_tasks)} tasks")

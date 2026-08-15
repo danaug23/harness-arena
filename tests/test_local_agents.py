@@ -717,6 +717,62 @@ for _empty in (None, "", "   "):
         check(f"{_empty!r} is refused with a dataset error",
               "TypeError from scrub", "a ConfigError")
 
+
+# ---------------------------------------------------------------------------
+# A subset belongs to the benchmark it was drawn from
+#
+# A subset is a list of task names, and a task name only means something inside
+# its own dataset: stratified-25 is 25 of Terminal-Bench 2's 89 tasks, and
+# against aider-polyglot it selects 25 tasks that do not exist. Nothing rejected
+# that while the rig ran one benchmark -- there was only one dataset a name
+# could have come from -- so multi-benchmark support made the combination
+# reachable from a dropdown without making it look wrong. A run that selects
+# nothing finishes, and reads like a run that measured something.
+# ---------------------------------------------------------------------------
+
+print("\n-- subsets belong to a benchmark --")
+
+from bench import subset_dataset, subset_datasets  # noqa: E402
+from bench.runner import check_subset_dataset  # noqa: E402
+
+check("the packaged subset declares its benchmark",
+      subset_dataset("stratified-25"), "terminal-bench@2.0")
+check("  and every subset is reported with one",
+      subset_datasets().get("stratified-25"), "terminal-bench@2.0")
+
+# The matching case must stay silent, or the guard is just an obstruction.
+check_subset_dataset("stratified-25", "terminal-bench@2.0")
+check("its own benchmark is accepted", True, True)
+
+try:
+    check_subset_dataset("stratified-25", "aider/aider-polyglot")
+    check("another benchmark is refused", "accepted", "refused")
+except ConfigError as exc:
+    check("another benchmark is refused", "would select nothing" in str(exc), True)
+    # The message has to name the way out, since the subset is not the thing
+    # that is wrong -- the pairing is.
+    check("  naming the dataset it does belong to",
+          "terminal-bench@2.0" in str(exc), True)
+
+# The compatibility case, and the one that would break quietly: a list written
+# before subsets declared anything belongs to every benchmark, exactly as it did
+# before this existed.
+with tempfile.TemporaryDirectory() as _sub_tmp:
+    _dir = Path(_sub_tmp)
+    (_dir / "undeclared.txt").write_text("task-one\ntask-two\n", encoding="utf-8")
+    import bench as _bench
+
+    _orig = (_bench.PACKAGED_SUBSET_DIR, _bench.USER_SUBSET_DIR)
+    _bench.PACKAGED_SUBSET_DIR = _bench.USER_SUBSET_DIR = _dir
+    try:
+        check("a subset that declares nothing belongs to any benchmark",
+              subset_dataset("undeclared"), None)
+        check_subset_dataset("undeclared", "gaia/gaia")
+        check("  and is refused on none of them", True, True)
+    finally:
+        (_bench.PACKAGED_SUBSET_DIR, _bench.USER_SUBSET_DIR) = _orig
+
+
 print()
 if failures:
     print(f"{len(failures)} FAILED: {', '.join(failures)}")

@@ -130,6 +130,41 @@ def find_log(trial_dir: Path) -> Path | None:
     return max(logs, key=lambda p: p.stat().st_mtime) if logs else None
 
 
+def agent_started_at(log_path: Path) -> float | None:
+    """When the model actually started working on this trial, as a POSIX time.
+
+    A trial is four phases -- environment build, harness install, agent, then
+    the verifier -- and only the third is the model doing the task. Harbor
+    records all four in `agent_execution.started_at`, but writes result.json
+    once, at the end, so there is nothing to read while a trial is in flight.
+    The agent log is the substitute: Harbor launches the agent with its output
+    teed into that file, so the file appearing *is* the agent starting.
+    Measured against a finished trial's own record, the log's birth time landed
+    252 ms after `agent_execution.started_at`, against 72 seconds of setup that
+    the trial directory's timestamp would have counted as model time.
+
+    `st_ctime` is not that timestamp and is the trap here: on Windows it is the
+    creation time, on Linux it is the inode *change* time, which every append to
+    a growing log moves forward -- a trial two hours in would report seconds.
+    So use a real birth time where the platform keeps one (Windows and macOS),
+    and fall back to the containing directory's mtime, which is stamped when the
+    log is added to it and left alone while the log is written to.
+
+    Only sound for a trial that is still running, which is the only trial that
+    needs it. Once the agent finishes, the harness's trajectory file lands in
+    the same directory and moves that mtime to the *end* of the agent phase --
+    on the trial measured above, to within a second of `agent_execution
+    .finished_at`. Finished trials must be read from result.json instead.
+    """
+    try:
+        born = getattr(log_path.stat(), "st_birthtime", None)
+        if born:
+            return float(born)
+        return log_path.parent.stat().st_mtime
+    except OSError:
+        return None
+
+
 def tail(path: Path, n_bytes: int = TAIL_BYTES) -> str:
     """Last n_bytes of a file, decoded leniently and cut at a line boundary."""
     try:
@@ -652,12 +687,33 @@ def read_activity(runs_dir: Path = RUNS_DIR) -> dict[str, Any]:
         "silent_s": None,
     }
 
-    # The trial directory is created when the trial starts, so its creation
-    # time is the trial clock -- config.json carries no start timestamp.
+    # Two clocks, because they answer different questions and merging them
+    # answered neither. The trial directory is created when the trial starts, so
+    # its creation time is when the *container* work began; the agent log
+    # appearing is when the model began. Reporting the first as "elapsed" put
+    # image pulls and harness installs on the model's account -- on one measured
+    # trial, 72 seconds of them -- and there is no ceiling on how wrong that
+    # gets: a cold image pull is minutes, and a trial can show more elapsed than
+    # the agent timeout allows, which is what gave this away.
+    now = time.time()
     try:
-        payload["elapsed_s"] = max(0.0, time.time() - trial_dir.stat().st_ctime)
+        trial_started = trial_dir.stat().st_ctime
     except OSError:
-        payload["elapsed_s"] = None
+        trial_started = None
+
+    agent_started = agent_started_at(log_path) if log_path else None
+    # None while setting up, deliberately: there is no agent clock yet, and
+    # showing a zero would claim the model has been working for no time rather
+    # than that it has not started.
+    payload["elapsed_s"] = max(0.0, now - agent_started) if agent_started else None
+    # Runs to now while setting up, then freezes at what setup cost. Kept
+    # visible either way -- it is the number that explains a trial sitting at
+    # "setting up" for ten minutes, and the one that says why a run's wall clock
+    # exceeds its model time.
+    if trial_started:
+        payload["setup_s"] = max(0.0, (agent_started or now) - trial_started)
+    else:
+        payload["setup_s"] = None
 
     if log_path and log_path.exists():
         size = log_path.stat().st_size

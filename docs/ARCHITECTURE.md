@@ -248,6 +248,14 @@ Key behaviors:
 - **Stopped runs**: a job killed mid-flight never writes `finished_at`; the manifest's
   `stopped_at` marker turns it into `status: stopped` rather than "running" forever.
 - **Wilson intervals**: every pass rate carries a 95 % score interval.
+- **Two clocks**: `agent_total_s` is the model's own time -- the trials' agent-execution
+  phases, plus the trial in flight measured from its agent log -- and `wall_clock_s` is what
+  the run cost end to end. A trial is four phases and only one is the model working; measured
+  on a real trial, 72 seconds of image pull, container build and harness install sat in front
+  of the agent. That overhead is the same for every harness on a dataset, so putting it in the
+  headline narrows every gap the rig exists to measure. The dashboard leads with model time
+  and keeps wall clock beneath it; `llm_busy_pct` is the ratio, capped at 100 because the two
+  clocks come from different sources and "104% generating" reads as a broken gauge.
 - **Pairing**: head-to-head only pairs runs sharing model, **dataset**, subset,
   partial-status and timeout multiplier, differing in harness. The dataset clause was
   missing until multi-benchmark support was audited: two *full* runs on different

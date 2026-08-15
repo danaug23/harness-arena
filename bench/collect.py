@@ -16,6 +16,7 @@ import json
 import math
 import re
 import statistics
+import time
 from collections.abc import Iterable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -23,7 +24,7 @@ from typing import Any
 
 from bench import RUNS_DIR
 from bench import registry as registry_mod
-from bench.activity import find_log, tail
+from bench.activity import agent_started_at, find_log, tail
 from bench.config import load, strip_ansi
 from bench.watchdog import health_around
 
@@ -376,24 +377,33 @@ def _wall_clock(
     manifest: dict[str, Any],
     job_result: dict[str, Any] | None,
     tasks: list[dict[str, Any]],
-) -> tuple[float | None, float | None]:
-    """How long the run took, and how much of it the model spent generating.
+    live_agent_s: float = 0.0,
+) -> tuple[float | None, float | None, float | None]:
+    """How long the run took, how much of that the model worked, and the ratio.
 
-    Anchored on the job's own start and ended at the last trial to finish --
-    not at the sum of trial durations, which double-counts whenever two trials
-    overlap and would report a 2-concurrent run as taking twice as long as it
-    did.
+    Wall clock is anchored on the job's own start and ended at the last trial to
+    finish -- not the sum of trial durations, which double-counts whenever two
+    trials overlap and would report a 2-concurrent run as taking twice as long
+    as it did.
 
-    A run still going is measured to *now*, so the number grows while you watch
-    instead of standing still until the last trial lands. That makes an
-    in-flight figure a lower bound rather than a wrong one.
+    Model time is the sum of the trials' agent-execution phases, which is the
+    only part of a run the harness under test is actually answerable for. The
+    remainder is image pulls, container builds, harness installs and verifiers
+    -- real cost, but the same cost for every harness on the same dataset, so
+    including it in the headline flatters a slow harness and punishes a fast
+    one. Both are reported; the ratio between them is `llm_busy_pct`.
+
+    A run still going is measured to *now* on both clocks: wall to this instant,
+    model time through the trial in flight (`live_agent_s`). Without that second
+    half the model clock would freeze for the length of a trial -- up to an hour
+    -- and read as a stalled run rather than a working one.
     """
     # Only sources that carry a zone: our own manifest, and the trials, which
     # Harbor writes with a Z. Its job-level result is deliberately not used --
     # see _utc_time.
     started = _utc_time(manifest.get("started_at"))
     if not started:
-        return None, None
+        return None, None, None
 
     # A grafted re-run (see RERUN_MARKER) is left out of both halves of this.
     # It is a real result and it counts everywhere else -- toward the score, the
@@ -412,8 +422,15 @@ def _wall_clock(
     wall = max(0.0, (ended - started).total_seconds())
     agent = sum(
         t["agent_s"] for t in measured if isinstance(t.get("agent_s"), (int, float))
+    ) + max(0.0, live_agent_s)
+    # Capped at the wall clock it is a share of. The two clocks come from
+    # different sources -- Harbor's own phase timestamps, and this machine's
+    # -- so a run whose trials overlap, or whose in-flight estimate runs
+    # slightly ahead, can otherwise produce "104% generating", which reads as a
+    # broken gauge and discredits the honest numbers beside it.
+    return wall, min(agent, wall) if wall else agent, (
+        min(100.0, agent / wall * 100) if wall else None
     )
-    return wall, (agent / wall * 100 if wall else None)
 
 
 def _expected_task_count(job_dir: Path, job_result: dict[str, Any] | None) -> int | None:
@@ -469,9 +486,20 @@ def load_run(job_dir: Path) -> dict[str, Any] | None:
     manifest = _read_json(job_dir / MANIFEST_NAME) or {}
     job_result = _read_json(job_dir / "result.json")
 
+    # Agent time being spent right now, in trials that have not written a
+    # result.json yet. Read from the filesystem rather than from Harbor's
+    # record, because the record does not exist until the trial ends -- see
+    # activity.agent_started_at, which is only sound for exactly this case.
+    live_agent_s = 0.0
+
     trials: list[dict[str, Any]] = []
     for trial_dir in sorted(p for p in job_dir.iterdir() if p.is_dir()):
         result = _read_json(trial_dir / "result.json")
+        if not result:
+            log_path = find_log(trial_dir)
+            started = agent_started_at(log_path) if log_path else None
+            if started:
+                live_agent_s += max(0.0, time.time() - started)
         if result:
             trials.append(normalize_trial(result, trial_dir))
 
@@ -545,7 +573,9 @@ def load_run(job_dir: Path) -> dict[str, Any] | None:
     n_checks_missed_total = sum(t.get("n_checks") or 0 for t in missed)
     n_checks_missed_passed = sum(t.get("n_checks_passed") or 0 for t in missed)
 
-    wall_clock_s, llm_busy_pct = _wall_clock(manifest, job_result, tasks)
+    wall_clock_s, agent_total_s, llm_busy_pct = _wall_clock(
+        manifest, job_result, tasks, live_agent_s
+    )
 
     errors: dict[str, int] = {}
     for trial in scored:
@@ -672,10 +702,6 @@ def load_run(job_dir: Path) -> dict[str, Any] | None:
         # n_done: a harness can finish a trial without reporting usage for it.
         "n_token_samples": len(all_output),
         "median_duration_s": statistics.median(durations) if durations else None,
-        # Elapsed time for the whole run, and the share of it the model spent
-        # generating. Not the sum of trial durations: that double-counts
-        # overlapping trials and would make a 2-concurrent run look twice as
-        # slow as it was.
         "n_checks_total": n_checks_total,
         "n_checks_passed": n_checks_passed,
         "check_rate": (n_checks_passed / n_checks_total) if n_checks_total else None,
@@ -686,6 +712,13 @@ def load_run(job_dir: Path) -> dict[str, Any] | None:
             if n_checks_missed_total else None
         ),
         "n_missed": len(missed),
+        # The model's own clock: agent-execution time summed across the trials,
+        # plus whatever the trial in flight has spent so far. This is the
+        # headline, because it is the part of a run the harness under test is
+        # answerable for -- pulls, builds, installs and verifiers cost the same
+        # for every harness on a dataset, so folding them in flatters the slow
+        # one. Wall clock stays beside it; llm_busy_pct is the ratio.
+        "agent_total_s": agent_total_s,
         "wall_clock_s": wall_clock_s,
         "llm_busy_pct": llm_busy_pct,
         "total_duration_s": sum(durations) if durations else None,

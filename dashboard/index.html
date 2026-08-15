@@ -326,8 +326,17 @@ select:focus-visible, button:focus-visible, .chip:focus-visible {
    nothing on screen saying why. This one states it four ways -- a filled box,
    a check glyph, the label, and a count of what is being hidden -- because the
    failure it caused was silent, and because colour alone is not a signal
-   everyone receives. */
-.check {
+   everyone receives.
+
+   Scoped to `.filters`, which is the only place it was ever meant for. Unscoped
+   it also matched every checkbox on the Run, Setup and Harness forms, and the
+   plain `.check` further down only overrode four of its declarations -- so the
+   pill's padding, border, 999px radius, background and checked-state colour
+   change all still landed on them. A harness row with a two-line explanation
+   under it was being drawn inside a pill built for a one-word chip, and the
+   `accent-color` on the form rule never applied because `appearance: none`
+   here had already replaced the native control. */
+.filters .check {
   display: inline-flex;
   align-items: center;
   gap: 8px;
@@ -341,7 +350,7 @@ select:focus-visible, button:focus-visible, .chip:focus-visible {
   cursor: pointer;
   user-select: none;
 }
-.check input {
+.filters .check input {
   appearance: none;
   -webkit-appearance: none;
   width: 13px;
@@ -357,23 +366,23 @@ select:focus-visible, button:focus-visible, .chip:focus-visible {
 }
 /* Phosphor is chrome here, not a data mark, so it cannot be mistaken for a
    series or a status. */
-.check input:checked { background: var(--phosphor); border-color: var(--phosphor); }
-.check input::after {
+.filters .filters .check input:checked { background: var(--phosphor); border-color: var(--phosphor); }
+.filters .check input::after {
   content: "\2713";
   font-size: 11px;
   line-height: 1;
   color: var(--plane);
   opacity: 0;
 }
-.check input:checked::after { opacity: 1; }
+.filters .filters .check input:checked::after { opacity: 1; }
 /* Enhancement only: the box above already carries the state on its own, so a
    browser without :has() still shows a checked filter as checked. */
-.check:has(input:checked) {
+.filters .check:has(input:checked) {
   color: var(--ink);
   border-color: var(--rule);
   background: var(--surface-2);
 }
-.check .count {
+.filters .check .count {
   color: var(--phosphor-dim);
   font-variant-numeric: tabular-nums;
 }
@@ -870,6 +879,70 @@ footer {
 }
 .cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
 
+/* A named step inside a form card.
+
+   The Run form is a sequence -- what to measure, how much of it, how hard to
+   push, what to record -- and it had no breaks in it, so it read as one wall of
+   controls ordered by when each was added rather than by when you need it. That
+   showed most after the benchmark selector arrived: it landed in the row beside
+   "task subset" and "timeout multiplier", which put the thing being measured,
+   the amount of it, and the load on the endpoint in one undifferentiated line.
+
+   A rule and a small label rather than a box: the page is already dense with
+   panels, and nesting bordered cards inside a bordered card would read as four
+   more panels rather than as four parts of one form. */
+.group { border-top: 1px solid var(--rule); margin-top: 15px; padding-top: 12px; }
+.group:first-child { border-top: 0; margin-top: 0; padding-top: 0; }
+.group > h3 {
+  margin: 0 0 10px;
+  font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase;
+  color: var(--phosphor-dim); font-weight: 700;
+}
+.group > h3 .sub {
+  font-size: 10.5px; letter-spacing: 0; text-transform: none;
+  color: var(--ink-muted); font-weight: 400; margin-left: 7px;
+}
+/* Checkbox groups are labelled by their own heading, so the fieldset carries
+   the grouping for a screen reader without drawing a second frame around it. */
+.group fieldset { border: 0; margin: 0; padding: 0; min-width: 0; }
+.group fieldset > legend {
+  padding: 0; margin-bottom: 3px;
+  font-size: 10.5px; letter-spacing: 0.06em; text-transform: uppercase;
+  color: var(--ink-2);
+}
+
+/* Three exclusive ways to say how much of a benchmark to run. The radio holds
+   the exclusivity natively, which is the point -- the form used to express it
+   with the word "or" in a label while the code sent both values. `:has()` only
+   draws the selected row, so a browser without it still shows the state on the
+   radio itself. */
+.scope { display: flex; flex-direction: column; gap: 3px; }
+.scope-opt {
+  display: flex; align-items: center; gap: 9px; flex-wrap: wrap;
+  padding: 7px 9px; border: 1px solid transparent; border-radius: 3px;
+  font-size: 11.5px; color: var(--ink-2); cursor: pointer;
+}
+.scope-opt:hover { background: var(--surface-2); }
+.scope-opt:has(input:checked) {
+  border-color: var(--rule); background: var(--surface-2); color: var(--ink);
+}
+.scope-opt input[type="radio"] {
+  flex: none; width: auto; margin: 0; accent-color: var(--phosphor-dim);
+}
+.scope-opt select { width: auto; flex: 0 1 220px; min-width: 0; }
+.scope-opt input[type="number"] { width: auto; flex: 0 0 92px; }
+.scope-opt .why { color: var(--ink-muted); font-size: 10.5px; }
+.scope-opt:has(input[type="radio"]:disabled) { opacity: 0.5; }
+
+/* The one line saying what pressing Start will actually do, set apart from the
+   controls because it is a statement rather than another decision. */
+.runplan {
+  border-left: 2px solid var(--phosphor-dim);
+  padding: 6px 0 6px 10px; margin: 15px 0 11px;
+  font-size: 11.5px; color: var(--ink-2); line-height: 1.55;
+}
+.runplan b { color: var(--ink); font-weight: 700; }
+
 /* ------------------------------- forms ---------------------------------- */
 
 .field { margin-bottom: 11px; }
@@ -878,10 +951,17 @@ footer {
   font-size: 10.5px; letter-spacing: 0.06em; text-transform: uppercase;
   color: var(--ink-2);
 }
-.field .hint {
+/* Unscoped on purpose. This was written as `.field .hint`, a descendant rule,
+   so a hint only got its styling when it sat *inside* a field -- and the two
+   longest explanations on the Run tab were written as `class="field hint"`, one
+   element carrying both classes, which matches a descendant selector never.
+   They inherited the body instead: 14px full-strength ink against the 10.5px
+   muted text they were meant to be, which made the two blocks of small print
+   the loudest thing in the card and is most of why the form read as noisy. */
+.hint {
   margin-top: 3px; font-size: 10.5px; color: var(--ink-muted); line-height: 1.45;
 }
-.field .hint code { color: var(--phosphor-dim); }
+.hint code { color: var(--phosphor-dim); }
 
 input[type="text"], input[type="number"], input[type="password"], select, textarea {
   width: 100%;
@@ -1410,7 +1490,19 @@ function renderFeed() {
     `<span><b>${esc(a.harness_label || a.harness || "agent")}</b> on
        <b>${esc(a.task || "?")}</b></span>`,
     a.model_label ? `<span>${esc(a.model_label)}</span>` : "",
-    a.elapsed_s != null ? `<span>elapsed <b>${dur(a.elapsed_s)}</b></span>` : "",
+    // The model's clock, which does not start until the container is built and
+    // the harness installed. Before that there is no agent time to report, so
+    // the setup clock is shown in its place and named -- a trial can sit here
+    // for minutes on a cold image pull, and calling that "elapsed" charged it
+    // to the model and let a trial show more elapsed than its agent timeout
+    // permits, which is how the mislabelling was caught.
+    a.elapsed_s != null
+      ? `<span title="Agent execution only. Setup${
+           a.setup_s != null ? " took " + dur(a.setup_s) : ""
+         } and is not counted here.">elapsed <b>${dur(a.elapsed_s)}</b></span>`
+      : a.setup_s != null
+        ? `<span title="Pulling the image, building the container and installing the harness. The model has not started yet.">setting up <b>${dur(a.setup_s)}</b></span>`
+        : "",
     a.log_bytes ? `<span>trajectory <b>${(a.log_bytes / 1024).toFixed(0)} KB</b></span>` : "",
     quiet > 45
       ? `<span class="feed-quiet">no new output for ${dur(quiet)}</span>`
@@ -2058,9 +2150,12 @@ function renderRunLog(data) {
           <td>${esc(r.harness_label)} ${scopeBadge(r)}<div class="mono-dim">${esc(r.agent_ref || "")}</div></td>
           <td>${esc(r.model_label)}<div class="mono-dim">${esc(r.model_quant || "")}</div></td>
           <td class="num">${r.n_done ? pct(r.pass_rate) : "—"}<div class="mono-dim">${r.n_resolved}/${r.n_done}</div></td>
-          <td class="num">${r.wall_clock_s ? dur(r.wall_clock_s) : "—"}
-              ${r.llm_busy_pct != null
-                ? `<div class="mono-dim" title="Share of elapsed time the model spent generating. The rest is image pulls, harness installs and verifiers.">${r.llm_busy_pct.toFixed(0)}% generating</div>`
+          <td class="num">${r.agent_total_s != null ? dur(r.agent_total_s)
+                            : r.wall_clock_s ? dur(r.wall_clock_s) : "—"}
+              ${r.wall_clock_s && r.agent_total_s != null
+                ? `<div class="mono-dim" title="${
+                     r.llm_busy_pct != null ? r.llm_busy_pct.toFixed(0) + "% of the wall clock was the model generating. " : ""
+                   }The rest is image pulls, container builds, harness installs and verifiers — the same cost for every harness, which is why it is not the headline.">${dur(r.wall_clock_s)} wall</div>`
                 : ""}</td>
           <td class="num">${r.n_concurrent == null ? "—" : r.n_concurrent}</td>
           <td class="num">${r.agent_timeout_multiplier == null ? "—" : r.agent_timeout_multiplier + "×"}
@@ -2265,9 +2360,19 @@ function render() {
 
   const models = modelsOf(data);
   if (!models.length) {
+    // An empty results page is the one screen that cannot explain itself: every
+    // control on it is derived from runs, so with no runs there is nothing to
+    // scope, filter or compare and the page has nothing to say. Say what to do
+    // instead of showing an empty grid -- and name the step, because the tab
+    // order is not the order you use them in.
     app.innerHTML = `<div class="empty">
-      No runs yet. Start one:<br><br>
-      <code>conda run --no-capture-output -n harness-arena python -m bench.runner</code>
+      <b>No runs yet.</b><br><br>
+      ${READONLY ? "This snapshot was exported before any run finished."
+        : `Point the rig at your model on the <b>Setup</b> tab, then start a
+           benchmark on the <b>Run</b> tab. Results appear here as each trial
+           lands — you do not have to wait for the run to finish.<br><br>
+           From a terminal instead:<br>
+           <code>conda run --no-capture-output -n harness-arena python -m bench.runner</code>`}
     </div>`;
     return;
   }
@@ -2636,6 +2741,22 @@ async function refreshServerState() {
   } catch (_) { /* leave the previous state up */ }
 }
 
+/* Re-read the results index into state.data.
+
+   act() refreshes /api/state, which knows nothing about which run directories
+   exist -- that is state.data, and it is only refetched by the 5s poll, which
+   re-renders the results tab and no other. So a run deleted from the upkeep tab
+   was gone on disk and still listed on screen: act() re-rendered from the copy
+   of state.data it already had, and the poll that fixed state.data never
+   repainted the tab the user was looking at. Deleting several in a row made it
+   look like nothing was happening at all. */
+async function refreshResults() {
+  try {
+    const res = await fetch("/api/results", { cache: "no-store" });
+    if (res.ok) state.data = await res.json();
+  } catch (_) { /* the poll will catch up */ }
+}
+
 const val = (id) => { const el = $("#" + id); return el ? el.value.trim() : ""; };
 const num = (id) => { const v = val(id); return v === "" ? null : Number(v); };
 const checked = (id) => { const el = $("#" + id); return !!(el && el.checked); };
@@ -2986,77 +3107,139 @@ function renderRun() {
       ${active ? `<button class="btn danger" id="btn-stop">Stop</button>` : ""}
     </div>`;
 
+  // The benchmark decides what a subset means, so it is resolved before the
+  // subset control is drawn rather than left to the change handler: a subset
+  // belonging to another dataset selects task names that do not exist there,
+  // and the run finishes having measured nothing. `null` means the subset
+  // declares no benchmark, which is every subset written before subsets had to.
+  const chosenDataset = (s.defaults || {}).dataset || "";
+  const subsetOf = s.subset_datasets || {};
+
+  // The single most consequential fact about a run -- which weights, at which
+  // endpoint -- was nowhere on the page that launches it, while the results
+  // view treats the model as its primary scope. Named here and in the confirm
+  // dialog, because pointing the rig at the wrong server is otherwise only
+  // discoverable from the run's manifest hours later.
+  const ep = (s.config || {}).endpoint || {};
+  const who = esc(ep.label || ep.model || "model auto-detected at the endpoint");
+
   return `
   ${noticeHtml("run")}
+  ${bar}
   <div class="card">
-    <h2>Start a benchmark</h2>
+    <h2>Start a benchmark
+      <span class="sub">${who} &middot; ${esc(ep.base_url || "no endpoint configured")}</span></h2>
     <div class="card-body">
       <p>Runs are sequential by design: one endpoint backs every harness, so two
          at once would each measure the other's queueing delay as its own latency.
          Only one can be active.</p>
-      <div class="field">
-        <label>Harnesses <span style="text-transform:none;letter-spacing:0">(none selected = all)</span></label>
-        ${ids.length ? ids.map((id) => `
-          <div class="check">
-            <input type="checkbox" id="h-${esc(id)}" data-harness-pick="${esc(id)}">
-            <label for="h-${esc(id)}">${esc(s.harnesses[id].label || id)}
-              <span style="color:var(--ink-muted)">${esc(id)}</span></label>
-          </div>`).join("")
-        : `<div class="note warn">No harnesses defined. Add one on the Harnesses tab.</div>`}
-      </div>
-      <div class="row">
+
+      <div class="group">
+        <h3>What to measure</h3>
         <div class="field">
           <label for="run-dataset">Benchmark</label>
           <select id="run-dataset">
-            ${(s.datasets || []).map((d) => {
-              const id = esc(d.id);
-              const sel = d.id === (s.defaults || {}).dataset ? " selected" : "";
-              const count = d.tasks ? ` (${d.tasks} tasks)` : "";
-              return `<option value="${id}"${sel}>${esc(d.label || d.id)}${count}</option>`;
+            ${(s.datasets || []).map((ds) => {
+              const id = esc(ds.id);
+              const sel = ds.id === chosenDataset ? " selected" : "";
+              const count = ds.tasks ? ` (${ds.tasks} tasks)` : "";
+              return `<option value="${id}"${sel}>${esc(ds.label || ds.id)}${count}</option>`;
             }).join("") || `<option value="">catalog default</option>`}
           </select>
-          <div class="hint">Subsets and pre-pull are defined for Terminal-Bench 2;
-            on another benchmark use "first N tasks" to scope a run.</div>
         </div>
-        <div class="field">
-          <label for="run-subset">Task subset</label>
-          <select id="run-subset">
-            <option value="">full dataset (every task)</option>
-            ${(s.subsets || []).map((n) => `<option value="${esc(n)}">${esc(n)}</option>`).join("")}
-          </select>
+        <fieldset>
+          <legend>Harnesses <span style="text-transform:none;letter-spacing:0;color:var(--ink-muted)">(none selected = all)</span></legend>
+          ${ids.length ? ids.map((id) => `
+            <div class="check">
+              <input type="checkbox" id="h-${esc(id)}" data-harness-pick="${esc(id)}">
+              <label for="h-${esc(id)}">${esc(s.harnesses[id].label || id)}
+                <span style="color:var(--ink-muted)">${esc(id)}</span></label>
+            </div>`).join("")
+          : `<div class="note warn">No harnesses defined. Add one on the Harnesses tab.</div>`}
+        </fieldset>
+      </div>
+
+      <div class="group">
+        <h3>How much of it</h3>
+        <!-- Three exclusive answers as one radio group, rather than two
+             independent controls with the word "or" in a label. They were never
+             exclusive: runSpecFromForm sent the subset and the task cap
+             together when both were filled, the runner honoured both, and the
+             confirm dialog named only the subset -- so a run could be launched
+             reading "subset stratified-25", quietly capped at 5 tasks, and then
+             recorded under the subset's name, where the results view would pair
+             it against real subset runs. -->
+        <div class="scope" role="radiogroup" aria-label="How much of the benchmark to run">
+          <label class="scope-opt">
+            <input type="radio" name="run-scope" value="full" checked>
+            <span>Full benchmark</span>
+            <span class="why" id="scope-full-n"></span>
+          </label>
+          <label class="scope-opt">
+            <input type="radio" name="run-scope" value="subset">
+            <span>Named subset</span>
+            <select id="run-subset" aria-label="Which subset" disabled>
+              ${(s.subsets || []).map((n) => {
+                // Disabled and labelled with the benchmark it belongs to, not
+                // dropped: a subset that vanishes when you change benchmark is
+                // a worse puzzle than one that is greyed out and says why.
+                // Carried in the markup so the state can be recomputed when the
+                // benchmark changes, which does not re-render this form.
+                const owner = subsetOf[n] || "";
+                const fits = !owner || !chosenDataset || owner === chosenDataset;
+                return `<option value="${esc(n)}" data-subset-dataset="${esc(owner)}"${
+                  fits ? "" : " disabled"}>${esc(n)}${fits ? "" : ` — ${esc(owner)} only`}</option>`;
+              }).join("") || `<option value="">none defined</option>`}
+            </select>
+            <span class="why" id="run-subset-why"></span>
+          </label>
+          <label class="scope-opt">
+            <input type="radio" name="run-scope" value="ntasks">
+            <span>First</span>
+            <input type="number" id="run-ntasks" min="1" max="1000" value="5"
+                   disabled aria-label="How many tasks">
+            <span>tasks</span>
+            <span class="why">recorded as a smoke test</span>
+          </label>
         </div>
-        <div class="field">
-          <label for="run-ntasks">or first N tasks</label>
-          <input type="number" id="run-ntasks" min="1" max="1000" placeholder="smoke test">
-        </div>
-        <div class="field">
-          <label for="run-mult">Timeout multiplier</label>
-          <input type="number" id="run-mult" step="0.5" min="0.1" max="100"
-                 value="${esc(d.agent_timeout_multiplier ?? 16)}">
+        <div class="hint">
+          A subset is a list of task names, so it only means anything on the
+          benchmark it was drawn from &mdash; one built for another is greyed out
+          rather than hidden, and the runner refuses the pairing too. A subset run
+          is comparable only against other runs of the same subset at the same
+          multiplier; the results view refuses to pair anything else.
         </div>
       </div>
-      <div class="field hint" style="margin-top:6px">
-        A subset run is comparable only against other runs of the same subset at the
-        same multiplier &mdash; the dashboard refuses to pair anything else. An
-        ad-hoc “first N” run is marked as a smoke test.
-      </div>
-      <div class="row" style="margin-top:8px">
-        <div class="field">
-          <label for="run-conc">Trials in flight</label>
-          <input type="number" id="run-conc" min="1" max="32" value="${esc(d.n_concurrent ?? 2)}">
+
+      <div class="group">
+        <h3>How hard to push <span class="sub">these change what the run measures</span></h3>
+        <div class="row">
+          <div class="field">
+            <label for="run-mult">Timeout multiplier</label>
+            <input type="number" id="run-mult" step="0.5" min="0.1" max="100"
+                   value="${esc(d.agent_timeout_multiplier ?? 16)}">
+          </div>
+          <div class="field">
+            <label for="run-conc">Trials in flight</label>
+            <input type="number" id="run-conc" min="1" max="32" value="${esc(d.n_concurrent ?? 2)}">
+          </div>
+          <div class="field">
+            <label for="run-agents">Generating at once</label>
+            <input type="number" id="run-agents" min="1" max="32" value="${esc(d.n_concurrent_agents ?? 1)}">
+          </div>
         </div>
-        <div class="field">
-          <label for="run-agents">Generating at once</label>
-          <input type="number" id="run-agents" min="1" max="32" value="${esc(d.n_concurrent_agents ?? 1)}">
+        <div class="hint">
+          Keep “generating at once” at your server's slot count, or requests queue and
+          the penalty lands hardest on whichever harness makes more calls &mdash; the
+          variable under test. A run at a different multiplier is a different
+          experiment and will not be paired against this one.
         </div>
+        <div class="note warn" id="run-conc-warn" style="display:none;margin-top:6px"></div>
       </div>
-      <div class="field hint" style="margin-top:6px">
-        Keep “generating at once” at your server's slot count, or requests queue and
-        the penalty lands hardest on whichever harness makes more calls &mdash; the
-        variable under test.
-      </div>
-      <div class="note warn" id="run-conc-warn" style="display:none;margin-top:6px"></div>
-      <div class="check" style="margin-top:10px">
+
+      <div class="group">
+        <h3>What to record</h3>
+      <div class="check">
         <input type="checkbox" id="run-allow-hosts">
         <div>
           <label for="run-allow-hosts">Send the egress allowlist</label>
@@ -3090,6 +3273,9 @@ function renderRun() {
         </div>
       </div>`;
       })()}
+      </div>
+
+      <div class="runplan" id="run-plan" aria-live="polite"></div>
       <div class="btn-row">
         <button class="btn primary" id="btn-start" ${active || cp.busy || !ids.length ? "disabled" : ""}>Start benchmark</button>
         <button class="btn" id="btn-dry" ${active || cp.busy ? "disabled" : ""}>Preview command</button>
@@ -3100,11 +3286,107 @@ function renderRun() {
 
   <div class="card">
     <h2>Live output <span class="sub">${cp.log.length} lines</span></h2>
-    ${bar}
     <div class="card-body">
       <div class="console" id="run-console">${renderLogLines()}</div>
     </div>
   </div>`;
+}
+
+/* One sentence describing the run the form currently specifies, in the words
+   the results view will use for it afterwards. Built once and rendered in two
+   places -- the line above the button and the confirm dialog -- because they
+   disagreed: the dialog reported the subset and said nothing about an n_tasks
+   cap that was shipping alongside it. */
+function runPlan(spec) {
+  const s = cp.server || {};
+  const label = (id) => ((s.harnesses || {})[id] || {}).label || id;
+  const ds = (s.datasets || []).find((x) => x.id === spec.dataset);
+  return {
+    who: spec.harnesses.length
+      ? spec.harnesses.map(label).join(", ")
+      : `every harness (${Object.keys(s.harnesses || {}).length})`,
+    bench: ds ? `${ds.label || ds.id}${ds.tasks ? ` · ${ds.tasks} tasks` : ""}`
+      : (spec.dataset || "the catalog default"),
+    scope: spec.subset ? `subset “${spec.subset}”`
+      : spec.n_tasks ? `the first ${spec.n_tasks} task${spec.n_tasks === 1 ? "" : "s"} (smoke test)`
+      : "every task",
+    // A blank number box makes num() return null, which used to reach the
+    // dialog as the word "null". The catalog default is what actually happens.
+    mult: spec.agent_timeout_multiplier == null
+      ? "the catalog default" : `${spec.agent_timeout_multiplier}×`,
+    model: ((s.config || {}).endpoint || {}).label
+      || ((s.config || {}).endpoint || {}).model || "the endpoint's model",
+  };
+}
+
+function syncRunPlan() {
+  const box = $("#run-plan");
+  if (!box) return;
+  const p = runPlan(runSpecFromForm());
+  box.innerHTML =
+    `Start will run <b>${esc(p.who)}</b> on <b>${esc(p.bench)}</b>, `
+    + `${esc(p.scope)}, against <b>${esc(p.model)}</b> at a ${esc(p.mult)} agent `
+    + `timeout.`;
+}
+
+/* Which scope controls are live, and which subsets the selected benchmark can
+   actually use. Recomputed on every input rather than only at render, because
+   changing the benchmark does not redraw this form -- so a subset disabled at
+   render time would stay disabled after switching to the benchmark it belongs
+   to, and vice versa. */
+function syncScope() {
+  const mode = (document.querySelector('input[name="run-scope"]:checked') || {}).value
+    || "full";
+  const dataset = val("run-dataset") || null;
+  const sub = $("#run-subset");
+  let usable = 0;
+
+  if (sub) {
+    Array.from(sub.options).forEach((o) => {
+      const owner = o.getAttribute("data-subset-dataset") || "";
+      // No declared benchmark means it predates the header and belongs to any
+      // of them -- the answer from before this existed, so lists someone
+      // already wrote keep working.
+      const fits = !owner || !dataset || owner === dataset;
+      o.disabled = !fits;
+      if (fits && o.value) usable += 1;
+    });
+    // A selection left pointing at an option that no longer fits would be sent
+    // and then refused by the runner, after the images had been pulled.
+    const picked = sub.options[sub.selectedIndex];
+    if (picked && picked.disabled) {
+      const first = Array.from(sub.options).find((o) => !o.disabled && o.value);
+      sub.value = first ? first.value : "";
+    }
+    sub.disabled = mode !== "subset" || !usable;
+  }
+
+  const radio = document.querySelector('input[name="run-scope"][value="subset"]');
+  if (radio) {
+    radio.disabled = !usable;
+    if (!usable && mode === "subset") {
+      const full = document.querySelector('input[name="run-scope"][value="full"]');
+      if (full) full.checked = true;
+    }
+  }
+
+  const why = $("#run-subset-why");
+  if (why) {
+    const defined = ((cp.server || {}).subsets || []).length;
+    why.textContent = !defined ? "none defined in bench/subsets/ yet"
+      : usable ? "task names, so it runs only on the benchmark it came from"
+      : "no subset belongs to this benchmark";
+  }
+
+  const n = $("#run-ntasks");
+  if (n) n.disabled = mode !== "ntasks";
+
+  const full = $("#scope-full-n");
+  if (full) {
+    const meta = ((cp.server || {}).datasets || []).find((x) => x.id === dataset);
+    full.textContent = meta && meta.tasks ? `every task — ${meta.tasks} of them`
+      : "every task";
+  }
 }
 
 function renderLogLines() {
@@ -3129,10 +3411,15 @@ function runSpecFromForm() {
   const picked = Array.from(document.querySelectorAll("[data-harness-pick]"))
     .filter((el) => el.checked)
     .map((el) => el.getAttribute("data-harness-pick"));
+  // One scope, taken from the radio rather than from whichever boxes happen to
+  // hold a value. Reading both controls independently is what let a run ship a
+  // subset *and* an n_tasks cap while the dialog named only the subset.
+  const mode = (document.querySelector('input[name="run-scope"]:checked') || {}).value
+    || "full";
   const spec = {
     harnesses: picked,
     dataset: val("run-dataset") || null,
-    subset: val("run-subset") || null,
+    subset: mode === "subset" ? (val("run-subset") || null) : null,
     agent_timeout_multiplier: num("run-mult"),
     n_concurrent: num("run-conc"),
     n_concurrent_agents: num("run-agents"),
@@ -3142,8 +3429,10 @@ function runSpecFromForm() {
   // Sticky across the re-render, so the box does not silently clear itself
   // between reading the hint and pressing start.
   cp.debugCapture = spec.debug_capture;
-  const n = num("run-ntasks");
-  if (n) spec.n_tasks = n;
+  if (mode === "ntasks") {
+    const n = num("run-ntasks");
+    if (n) spec.n_tasks = n;
+  }
   return spec;
 }
 
@@ -3172,24 +3461,26 @@ function syncConcurrencyWarning() {
 }
 
 function wireRun() {
-  const agents = $("#run-agents");
-  if (agents) {
-    agents.oninput = syncConcurrencyWarning;
-    syncConcurrencyWarning();
+  // One handler for the whole form rather than one per control: every one of
+  // these depends on the others -- the benchmark decides which subsets are
+  // usable, the scope decides which boxes are live, and all of them feed the
+  // sentence above the button. Wiring them singly is how the benchmark select
+  // ended up changing nothing but itself.
+  const form = $("#run-plan") && $("#run-plan").closest(".card-body");
+  if (form) {
+    const sync = () => { syncScope(); syncConcurrencyWarning(); syncRunPlan(); };
+    form.oninput = sync;
+    form.onchange = sync;
+    sync();
   }
 
   const start = $("#btn-start");
   if (start) start.onclick = () => {
     const spec = runSpecFromForm();
-    const scope = spec.subset ? `subset “${spec.subset}”`
-      : spec.n_tasks ? `the first ${spec.n_tasks} task(s)`
-      : "the full dataset";
-    const who = spec.harnesses.length ? spec.harnesses.join(", ") : "every harness";
-    // Name the benchmark in the dialog: a mis-set dropdown is otherwise only
-    // discoverable hours later, from the job name.
-    const bench = spec.dataset || "the catalog default";
+    const p = runPlan(spec);
     if (!confirm(
-      `Start a benchmark?\n\n  ${who}\n  ${bench}\n  ${scope}\n  timeout multiplier ${spec.agent_timeout_multiplier}\n\n`
+      `Start a benchmark?\n\n  ${p.who}\n  ${p.bench}\n  ${p.scope}\n`
+      + `  ${p.model}\n  agent timeout ${p.mult}\n\n`
       + `This runs Docker containers and can take many hours.`)) return;
     cp.log = [];
     act("run", "start", () => api("/api/run", { method: "POST", body: spec }),
@@ -3659,9 +3950,16 @@ function wireMaintenance() {
       const id = b.getAttribute("data-del-run");
       if (!confirm(`Delete run “${id}”?\n\nIts trial logs, trajectories and results `
         + `are removed permanently. This cannot be undone.`)) return;
-      act("maintenance", "delrun", () =>
-        api("/api/runs/" + encodeURIComponent(id), { method: "DELETE", body: {} }),
-        (r) => `Deleted ${id} (${(r.freed_bytes / 1e6).toFixed(0)} MB freed).`);
+      act("maintenance", "delrun", async () => {
+        const r = await api("/api/runs/" + encodeURIComponent(id), {
+          method: "DELETE", body: {},
+        });
+        // Re-read before act() repaints, exactly as the reap button does: the
+        // list below is drawn from state.data, and without this it would keep
+        // listing a directory that is no longer on disk.
+        await refreshResults();
+        return r;
+      }, (r) => `Deleted ${id} (${(r.freed_bytes / 1e6).toFixed(0)} MB freed).`);
     };
   });
 
@@ -3758,6 +4056,13 @@ function setLive(on, text) {
   $("#live-text").textContent = text;
 }
 
+/* Which runs exist, as one comparable string. Ids only: this decides whether a
+   tab has to be repainted, and a run whose task count merely advanced has not
+   changed what the upkeep list says. */
+function runIdSignature() {
+  return ((state.data && state.data.runs) || []).map((r) => r.run_id).join(" ");
+}
+
 async function poll() {
   const app = $("#app");
   // Hold the previous render rather than flashing a skeleton -- but only mark
@@ -3771,13 +4076,22 @@ async function poll() {
       fetch("/api/activity", { cache: "no-store" }).catch(() => null),
     ]);
     if (!res.ok) throw new Error(res.status);
+    const before = runIdSignature();
     state.data = await res.json();
     state.activity = act && act.ok ? await act.json() : null;
+    const runsChanged = runIdSignature() !== before;
     const running = state.data.summary.n_running;
     setLive(running > 0, running > 0 ? `${running} run${running === 1 ? "" : "s"} in flight` : "idle");
     // Only the visible tab is re-rendered. Repainting a form tab on this tick
     // would discard whatever the user was part-way through typing.
     if (cp.tab === "results") render();
+    // The exception, and only when the set of runs actually changed: the upkeep
+    // tab lists the run directories on disk, so leaving it alone across a tick
+    // that added or removed one shows a run that has finished as still missing,
+    // or one just deleted as still present. Gated on the change rather than run
+    // every tick for the reason above -- this tab has forms on it too, and five
+    // seconds is not long enough to fill one in.
+    else if (cp.tab === "maintenance" && runsChanged) renderTab("maintenance");
   } catch (err) {
     setLive(false, "server unreachable");
   } finally {
@@ -3801,6 +4115,38 @@ async function pollSupervisor() {
   if (before !== after && cp.tab === "maintenance") renderTab("maintenance");
 }
 
+/* Which tab to open on.
+
+   Results is the right answer for an installation that has runs, and it is the
+   wrong one for every installation that does not: the page is built entirely
+   out of runs, so with none it can only render an explanation of itself, and a
+   first-time user was being dropped on an empty grid with no indication that
+   the two tabs they actually needed were elsewhere. The tab order reads
+   Results, Run, Setup -- the reverse of the order you use them in.
+
+   Resolved from state rather than by reordering the tabs, so the page opens on
+   the first step that is not done yet: configure the endpoint, start a run,
+   read the results. Once there are runs it opens where it always did.
+
+   Only ever applied to the initial load. A landing rule that fired later would
+   move the page out from under someone who had deliberately navigated. */
+function firstUnfinishedStep() {
+  if (((state.data || {}).runs || []).length) return "results";
+  // `config_exists` is the file, not a reachable endpoint: it answers "has this
+  // been set up", which is the question the Setup tab exists for. A configured
+  // rig that is merely down should not send you back to a form you have filled.
+  return (cp.server && cp.server.config_exists) ? "run" : "setup";
+}
+
+async function landOnTheFirstUnfinishedStep(booted) {
+  // After both fetches, or the answer is drawn from state that has not arrived
+  // and every fresh load routes to Setup. `booted` is the first poll already in
+  // flight rather than a second one: this only has to wait for it.
+  await Promise.all([booted, refreshServerState()]);
+  const target = firstUnfinishedStep();
+  if (target !== "results") selectTab(target);
+}
+
 if (window.__HARNESS_ARENA_SNAPSHOT__) {
   // Exported snapshot: data is inlined, there is no server to poll and no
   // control plane to offer, so the tabs that write are removed entirely.
@@ -3811,7 +4157,7 @@ if (window.__HARNESS_ARENA_SNAPSHOT__) {
   });
   render();
 } else {
-  poll();
+  const booted = poll();
   setInterval(poll, POLL_MS);
   if (!READONLY) {
     pollSupervisor();
@@ -3819,6 +4165,7 @@ if (window.__HARNESS_ARENA_SNAPSHOT__) {
     // The console tails faster than the results scan: it is the only feedback
     // that a run which prints nothing for minutes is still alive.
     setInterval(pollRun, 2000);
+    landOnTheFirstUnfinishedStep(booted);
   } else {
     document.querySelectorAll("#tabs button").forEach((b) => {
       if (b.getAttribute("data-tab") !== "results") b.remove();
