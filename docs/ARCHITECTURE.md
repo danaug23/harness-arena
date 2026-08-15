@@ -215,6 +215,17 @@ Three constraints shape it, and each rules out an otherwise nicer scheme:
 A dataset with no catalogued slug derives one from its id rather than refusing: `--dataset`
 accepts anything Harbor resolves, and an unnameable directory is worse than a longer name.
 
+**Dataset `host_env`.** Most benchmarks only need the *agent* to reach an endpoint. Some
+call a model themselves — tau3-bench simulates the user in its environment and judges
+assertions in its verifier — and Harbor reads those phases' required variables from its own
+environment, exiting before the first trial when one is unset. A `datasets:` entry can
+therefore declare `host_env`, filled from the same substitutions as a harness block and
+merged into the child's environment, with the harness winning any collision because it
+describes the thing being measured. The resolved values are recorded in the manifest as
+`dataset_env`, scrubbed: a run whose user simulator and judge were a small local model is
+not comparable to one where they were frontier models, and nothing else in the output would
+reveal it.
+
 Sets `PYTHONPATH` to the project root so Harbor can import `harnesses.*` in its own process.
 
 Runs harnesses one after another and returns non-zero if any failed.

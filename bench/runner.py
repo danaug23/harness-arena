@@ -342,6 +342,18 @@ def new_batch_id(stamp: str) -> str:
     return f"{stamp}-{secrets.token_hex(3)}"
 
 
+def dataset_host_env(dataset: str | None, registry: dict[str, Any]) -> dict[str, str]:
+    """Host variables the *benchmark itself* needs, before substitution.
+
+    Distinct from a harness's `host_env`: this is what the dataset's own
+    environment and verifier require, and it is the same for every harness in a
+    sweep. Returns a copy, since the caller substitutes into it.
+    """
+    entry = registry_mod.dataset_entry(dataset, registry)
+    declared = entry.get("host_env")
+    return dict(declared) if isinstance(declared, dict) else {}
+
+
 def scope_name(
     subset: str | None, n_tasks: int | None, include_tasks: list[str] | None
 ) -> str:
@@ -538,7 +550,17 @@ def build_command(
         argv += ["--ak", f"{key}={value}"]
     argv += list(extra_args or [])
 
-    return argv, dict(spec.get("host_env") or {})
+    # Some benchmarks call a model of their own, outside the agent under test:
+    # tau3-bench simulates the user in its environment and judges assertions in
+    # its verifier. Harbor reads a task's [environment].env / [verifier].env
+    # from its *own* environment and exits before the first trial when a
+    # required one is unset -- which is how a tau3 sweep failed seven for seven
+    # with "Missing Environment Variables: OPENAI_API_KEY, OPENAI_BASE_URL".
+    #
+    # The harness block wins on a collision: it describes the thing being
+    # measured, while the dataset block only has to make the benchmark run.
+    dataset_env = _fill(dataset_host_env(dataset, registry), subs)
+    return argv, {**dataset_env, **dict(spec.get("host_env") or {})}
 
 
 def write_manifest(
@@ -564,6 +586,10 @@ def write_manifest(
     max_retries: int = 0,
     retry_include: list[str] | None = None,
     debug_capture: bool = False,
+    # Only needed to resolve the dataset's own host_env, which most datasets do
+    # not have. Optional so a caller recording a manifest for a run it already
+    # built does not have to carry the catalog along with it.
+    registry: dict[str, Any] | None = None,
 ) -> None:
     job_dir.mkdir(parents=True, exist_ok=True)
     # Derived from the same inputs as the command itself rather than passed in,
@@ -600,6 +626,23 @@ def write_manifest(
         "reasoning_effort": reasoning_effort,
         "reasoning_effort_source": reasoning_source,
         "dataset": dataset,
+        # What the *benchmark's own* machinery was pointed at, when it has any.
+        # tau3-bench simulates the user and judges in natural language, so these
+        # name the model doing both -- and a run whose simulator and judge are a
+        # small local model is not comparable to a published score where both
+        # are frontier models. Nothing else on screen would reveal the
+        # difference, so it travels with the result. Scrubbed like the command:
+        # the endpoint's credential is substituted into these.
+        "dataset_env": {
+            key: scrub(str(value), config)
+            for key, value in sorted(
+                _fill(
+                    dataset_host_env(dataset, registry or {}),
+                    _substitutions(model, config),
+                ).items()
+            )
+        }
+        or None,
         "n_concurrent": n_concurrent,
         "n_concurrent_agents": n_concurrent_agents,
         "n_attempts": n_attempts,
@@ -747,6 +790,7 @@ def run_one(
         config=config,
         argv=argv,
         dataset=dataset,
+        registry=registry,
         n_concurrent=n_concurrent,
         n_concurrent_agents=n_concurrent_agents,
         n_attempts=n_attempts,

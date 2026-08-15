@@ -198,6 +198,62 @@ def test_manifest_never_records_a_key() -> None:
           "hostname" in manifest["orchestrator"], False)
 
 
+def test_manifest_records_what_the_benchmark_itself_was_pointed_at() -> None:
+    """tau3-bench simulates the user and judges in natural language.
+
+    Both call a model, and by default its task.toml points both at gpt-5.2. Run
+    against a local endpoint they are whatever that endpoint serves -- so a
+    score from a run whose simulator and judge were a small local model is not
+    comparable to a published one, and nothing else in the output would say so.
+
+    Recorded scrubbed, because the endpoint's credential is substituted into
+    these the same way it is into the command line.
+    """
+    from bench import registry as registry_mod
+    from bench.runner import write_manifest as wm
+
+    catalog = registry_mod.load()
+    config = Config(endpoint=EndpointConfig(base_url="http://example.invalid:1/v1",
+                                            api_key=KEY))
+    model = ModelIdentity(
+        served_id="a-model", fingerprint="deadbeefdeadbeef", label="A Model",
+        base_url="http://example.invalid:1/v1", host="example.invalid", n_ctx=1024,
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        job = Path(tmp) / "job"
+        wm(job, harness_id="omp", spec={"label": "omp"}, model=model,
+           config=config, argv=["harbor", "run"],
+           dataset="sierra-research/tau3-bench", registry=catalog,
+           n_concurrent=1, n_concurrent_agents=1, n_attempts=1, n_tasks=1,
+           include_tasks=None, agent_timeout_multiplier=8.0, subset=None,
+           started_at="2026-08-15T00:00:00+00:00")
+        raw = (job / MANIFEST_NAME).read_text(encoding="utf-8")
+        recorded = json.loads(raw)["dataset_env"]
+
+        plain = Path(tmp) / "plain"
+        wm(plain, harness_id="omp", spec={"label": "omp"}, model=model,
+           config=config, argv=["harbor", "run"], dataset="terminal-bench@2.0",
+           registry=catalog, n_concurrent=1, n_concurrent_agents=1,
+           n_attempts=1, n_tasks=1, include_tasks=None,
+           agent_timeout_multiplier=8.0, subset=None,
+           started_at="2026-08-15T00:00:00+00:00")
+        plain_manifest = json.loads(
+            (plain / MANIFEST_NAME).read_text(encoding="utf-8")
+        )
+
+    check("the simulated user's model is recorded",
+          recorded.get("TAU2_USER_MODEL"), "openai/a-model")
+    check("...and the judge's", recorded.get("TAU2_NL_ASSERTIONS_MODEL"),
+          "openai/a-model")
+    check("...and the endpoint it was given",
+          recorded.get("OPENAI_BASE_URL"), "http://example.invalid:1/v1")
+    check("the key is not recorded", KEY in raw, False)
+    # A benchmark that needs none of this records nothing rather than an empty
+    # object, so its absence reads as "not applicable" instead of "none set".
+    check("a benchmark that needs none records none",
+          plain_manifest["dataset_env"], None)
+
+
 def test_hostname_opt_in() -> None:
     config = Config(endpoint=EndpointConfig(), record_hostname=True)
     model = ModelIdentity(
@@ -538,6 +594,7 @@ if __name__ == "__main__":
         test_strip_ansi()
         test_manifest_never_records_a_key()
         test_hostname_opt_in()
+        test_manifest_records_what_the_benchmark_itself_was_pointed_at()
         test_saved_config_round_trips()
         test_slug_is_filesystem_safe()
     finally:

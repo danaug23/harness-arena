@@ -315,6 +315,47 @@ def cmd_doctor(argv: list[str]) -> int:
     except Exception as exc:  # noqa: BLE001 - never let a report break doctor
         _check("harness catalog", False, str(exc))
 
+    # --- Windows path length ---
+    #
+    # Harbor caches a task package under
+    # <cache>/tasks/packages/<org>/<dataset>__<task>/<64-char hash>/..., so the
+    # dataset's own task names decide whether its files fit. tau3-bench has
+    # names up to 118 characters, which puts its deepest file at 287 -- past the
+    # 260 limit. With long paths off the download creates the directories and
+    # writes nothing, and the failure surfaces much later as Harbor reading a
+    # task.toml that was never written. Checked here because nothing in that
+    # chain mentions path length.
+    if sys.platform == "win32":
+        try:
+            import winreg
+
+            with winreg.OpenKey(
+                winreg.HKEY_LOCAL_MACHINE,
+                r"SYSTEM\CurrentControlSet\Control\FileSystem",
+            ) as key:
+                enabled = winreg.QueryValueEx(key, "LongPathsEnabled")[0]
+        except (OSError, ImportError):
+            enabled = 0
+        if not _check(
+            "long paths enabled",
+            bool(enabled),
+            "on" if enabled else "off -- benchmarks with long task names cannot "
+            "fully download",
+        ):
+            print(
+                "         Windows caps paths at 260 characters unless this is on.\n"
+                "         Harbor writes a task's files under a directory named for\n"
+                "         the task plus a 64-character hash, so a dataset with long\n"
+                "         task names (tau3-bench reaches 287) silently downloads an\n"
+                "         empty package and fails later reading task.toml.\n"
+                "         Fix, in an admin PowerShell, then reboot:\n"
+                "           Set-ItemProperty "
+                "'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\FileSystem' "
+                "LongPathsEnabled 1\n"
+                "         Then clear the partial download:  harbor cache clean"
+            )
+            failures.append("long paths")
+
     # --- disk ---
     try:
         runs_dir = config.resolved_runs_dir()

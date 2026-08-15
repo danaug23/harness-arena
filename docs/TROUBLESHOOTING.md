@@ -347,6 +347,77 @@ runs/<job>/<trial>/verifier/test-stdout.txt
 A trial that genuinely crashed has no `test-stdout.txt` at all — that is the difference
 between "could not be scored" and "never got that far".
 
+### Every harness dies in seconds with `Missing Environment Variables`
+
+```
+  Variable         │  Phase
+  OPENAI_API_KEY   │  [environment.env]
+  OPENAI_BASE_URL  │  [environment.env]
+  OPENAI_API_KEY   │  [verifier.env]
+  OPENAI_BASE_URL  │  [verifier.env]
+```
+
+**Cause.** The benchmark's own machinery calls a model, not just the agent under test.
+tau3-bench simulates the user inside its environment and judges assertions in natural
+language inside its verifier, so both phases need an endpoint. Harbor reads a task's
+`[environment].env` and `[verifier].env` from *its own* process environment and exits
+before the first trial when a required one is unset — so all seven harnesses fail in
+seconds, each writing a manifest and nothing else.
+
+**Fix.** The catalog carries them. `datasets:` entries take a `host_env` block using the
+same `{placeholders}` as a harness, and the runner puts it in the child's environment:
+
+```yaml
+- id: sierra-research/tau3-bench
+  host_env:
+    OPENAI_API_KEY: '{api_key}'
+    OPENAI_BASE_URL: '{base_url}'
+    TAU2_USER_MODEL: openai/{model_id}
+    TAU2_NL_ASSERTIONS_MODEL: openai/{model_id}
+    TAU2_USER_REASONING_EFFORT: ''
+```
+
+The two model names matter as much as the URL: tau3's `task.toml` defaults both to
+`gpt-5.2`, so setting only the endpoint asks your local server for a model it does not
+serve. The `openai/` prefix is litellm's provider routing, which is what tau2 calls. The
+empty reasoning effort is deliberate — tau2 sends one only when that variable is
+non-empty, and a server that refuses it fails every request.
+
+**Read the result carefully.** A tau3 run against a local endpoint has that model playing
+the user *and* grading the outcome. It is not comparable to a published tau3-bench score,
+where both are frontier models. The manifest records them under `dataset_env` for exactly
+that reason.
+
+### tau3-bench: `FileNotFoundError` on a `task.toml`, on Windows
+
+**Cause.** Path length, not a missing download. Harbor caches a task under
+`<cache>/tasks/packages/<org>/<dataset>__<task>/<64-char hash>/…`, so the dataset's own
+task names decide whether its files fit. tau3-bench has task names up to 118 characters —
+one reaches `…telecom-mobile-data-issue-bad-network-preference-bad-vpn-user-abroad-roaming-disabled-on-persona-none` — which puts its deepest file at **287 characters** against Windows'
+260-character limit. With long paths disabled the download creates the directories and
+writes nothing, leaving an empty package that fails much later when Harbor reads
+`task.toml`.
+
+**Diagnosis.** `harness-arena doctor` reports it. By hand:
+
+```powershell
+Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' LongPathsEnabled
+```
+
+**Fix.** In an admin PowerShell, then reboot:
+
+```powershell
+Set-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' LongPathsEnabled 1
+```
+
+Then clear the partial download — an empty package directory is not re-fetched on its own:
+
+```
+harbor cache clean
+```
+
+Linux and macOS are unaffected.
+
 ### A benchmark id will not resolve
 
 **Cause.** `id:` in the `datasets:` catalog is passed to `harbor run --dataset` verbatim,

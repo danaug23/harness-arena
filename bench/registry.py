@@ -86,6 +86,21 @@ HEADER = """\
 # A dataset with neither can still be benchmarked; it just cannot be pre-pulled,
 # and guessing would fetch the wrong images or none at all.
 #
+# `host_env` is for the benchmarks whose *own* machinery calls a model, rather
+# than only the agent under test. Harbor reads a task's [environment].env and
+# [verifier].env from its own environment and refuses to start when a required
+# one is unset, so without this the run dies before its first trial. The values
+# take the same {placeholders} as a harness block and never reach a manifest
+# unredacted.
+#
+# tau3-bench is the case that exists today: its environment simulates the user
+# and its verifier judges assertions in natural language, so both need an
+# endpoint of their own. Its task.toml defaults both models to gpt-5.2, which
+# means pointing only the URL at a local server asks that server for gpt-5.2 --
+# so the model names are set too. A run whose user simulator and judge are the
+# same small local model is NOT comparable to a published tau3-bench score,
+# where both are frontier models; the manifest records what they were.
+#
 # Comments below this line do not survive an edit made from the dashboard:
 # that path rewrites the file from parsed YAML and re-emits only this header.
 

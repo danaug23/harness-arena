@@ -773,6 +773,76 @@ with tempfile.TemporaryDirectory() as _sub_tmp:
         (_bench.PACKAGED_SUBSET_DIR, _bench.USER_SUBSET_DIR) = _orig
 
 
+
+# ---------------------------------------------------------------------------
+# A benchmark whose own machinery calls a model
+#
+# Most datasets only need the agent to reach an endpoint. tau3-bench simulates
+# the user in its environment and judges assertions in its verifier, so both
+# need one too -- and Harbor reads a task's [environment].env / [verifier].env
+# from its *own* environment and exits before the first trial when a required
+# variable is unset. A seven-harness tau3 sweep failed seven for seven that way,
+# each run dying in seconds with "Missing Environment Variables".
+# ---------------------------------------------------------------------------
+
+print("\n-- dataset host_env --")
+
+from bench.runner import dataset_host_env  # noqa: E402
+
+_cfg2 = Config(endpoint=EndpointConfig(base_url="http://example.invalid:8002/v1"))
+_argv2, _host_env = build_command(
+    "omp", _catalog["harnesses"]["omp"], _model, _catalog, _cfg2,
+    jobs_dir=Path("runs"), name="j", dataset="sierra-research/tau3-bench",
+    n_concurrent=1, n_attempts=1, n_tasks=1, include_tasks=None,
+    extra_args=None, allow_hosts=False, agent_timeout_multiplier=8.0,
+    n_concurrent_agents=1, env_build_timeout_multiplier=4.0,
+    max_retries=0, retry_include=None,
+)
+# The two Harbor refuses to start without.
+check("the benchmark's endpoint reaches the child",
+      _host_env.get("OPENAI_BASE_URL"), "http://example.invalid:8002/v1")
+check("  with a credential", bool(_host_env.get("OPENAI_API_KEY")), True)
+# tau3's task.toml defaults both of these to gpt-5.2, so pointing only the URL
+# at a local server would ask that server for gpt-5.2.
+check("the simulated user is told which model to use",
+      _host_env.get("TAU2_USER_MODEL"), "openai/a-model")
+check("  and so is the judge",
+      _host_env.get("TAU2_NL_ASSERTIONS_MODEL"), "openai/a-model")
+# tau2 only sends a reasoning effort when the variable is non-empty, and a local
+# server that refuses one fails every request of the run.
+check("  and no reasoning effort is sent",
+      _host_env.get("TAU2_USER_REASONING_EFFORT"), "")
+
+# A dataset that needs nothing must not gain anything.
+_, _plain_env = build_command(
+    "omp", _catalog["harnesses"]["omp"], _model, _catalog, _cfg2,
+    jobs_dir=Path("runs"), name="j", dataset="terminal-bench@2.0",
+    n_concurrent=1, n_attempts=1, n_tasks=1, include_tasks=None,
+    extra_args=None, allow_hosts=False, agent_timeout_multiplier=8.0,
+    n_concurrent_agents=1, env_build_timeout_multiplier=4.0,
+    max_retries=0, retry_include=None,
+)
+check("a dataset that needs none gets none", _plain_env, {})
+check("an uncatalogued dataset is not guessed at",
+      dataset_host_env("nobody/nothing", _catalog), {})
+
+# The harness block wins: it describes the thing being measured, while the
+# dataset block only has to make the benchmark run.
+_clash = {
+    **_catalog,
+    "datasets": [{"id": "x/y", "slug": "xy", "host_env": {"SHARED": "dataset"}}],
+}
+_spec = {**_catalog["harnesses"]["omp"], "host_env": {"SHARED": "harness"}}
+_, _merged = build_command(
+    "omp", _spec, _model, _clash, _cfg2, jobs_dir=Path("runs"), name="j",
+    dataset="x/y", n_concurrent=1, n_attempts=1, n_tasks=1, include_tasks=None,
+    extra_args=None, allow_hosts=False, agent_timeout_multiplier=8.0,
+    n_concurrent_agents=1, env_build_timeout_multiplier=4.0,
+    max_retries=0, retry_include=None,
+)
+check("the harness wins a collision", _merged.get("SHARED"), "harness")
+
+
 print()
 if failures:
     print(f"{len(failures)} FAILED: {', '.join(failures)}")
