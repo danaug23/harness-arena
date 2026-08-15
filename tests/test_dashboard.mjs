@@ -146,7 +146,12 @@ vm.runInContext(script[1], ctx);
 Object.assign(ctx, { SEED: data });
 vm.runInContext(
   "state.data = SEED;" +
-  "state.model = (state.data.models[0] || {}).fingerprint || (state.data.models[0] || {}).label;",
+  "state.model = (state.data.models[0] || {}).fingerprint || (state.data.models[0] || {}).label;" +
+  // render() resolves the benchmark scope before anything is drawn. These
+  // checks call the render functions directly, so they resolve it the same way
+  // -- otherwise every one of them would be exercising the unscoped fallback
+  // rather than the path the page actually takes.
+  "state.dataset = 'terminal-bench@2.0';",
   ctx
 );
 
@@ -926,6 +931,9 @@ run("maintenance tab (no state)", "renderMaintenance()", 10);
     const mk = (id, batch, subset, started) => ({
       run_id: id, batch_id: batch, harness: "h" + id, harness_label: "H" + id,
       model_fingerprint: fp, model_label: "M", subset, is_partial: true,
+      // Sweep grouping is scoped to the selected benchmark like everything else
+      // on the page, so these have to sit inside it to be grouped at all.
+      dataset: "terminal-bench@2.0",
       started_at: started, n_done: 1, n_total: 1, n_resolved: 0, pass_rate: 0,
       status: "complete", tasks: [],
     });
@@ -966,6 +974,7 @@ run("maintenance tab (no state)", "renderMaintenance()", 10);
       // An ad-hoc "first N" run: partial, and with no named subset. That
       // combination, and only that, is what isSmoke means.
       subset: null, is_partial: true, n_tasks_requested: 5,
+      dataset: "terminal-bench@2.0",
       started_at: "2026-08-03T10:00:00+00:00", n_done: 2, n_total: 5,
       n_resolved: 0, pass_rate: 0, status: "running", tasks: [],
     };
@@ -1197,6 +1206,105 @@ run("maintenance tab (no state)", "renderMaintenance()", 10);
     lb.indexOf('class="lb-checks"') > lb.indexOf('class="lb-val"')]);
   cases.push(["...and are labelled as checks, not as a score",
     /of checks/.test(lb) && /not comparable to the pass rate/i.test(lb)]);
+
+  for (const [label, ok] of cases) {
+    console.log(`${ok ? "PASS" : "FAIL"}  ${label}`);
+    if (!ok) failed++;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   Benchmark scoping.
+
+   The results view is scoped to one model AND one benchmark. It used to be
+   scoped to the model alone, which pooled a Terminal-Bench 2 run and an
+   aider-polyglot run of the same model into one pass rate -- an average over 89
+   tasks and 225 tasks, with nothing on screen saying so.
+--------------------------------------------------------------------------- */
+{
+  const cases = [];
+  const inCtx = (expr) => vm.runInContext(expr, ctx);
+  const fp = inCtx("state.model");
+
+  // A second benchmark, same model. Built here rather than in the shared
+  // fixture: forty other checks count the runs in that one.
+  const base = inCtx("SEED");
+  const poly = {
+    run_id: "codex__x__polyglot", batch_id: "bp", harness: "codex",
+    harness_label: "Codex CLI", model_fingerprint: fp, model_label: "M",
+    dataset: "aider/aider-polyglot", subset: null, is_partial: false,
+    started_at: "2026-08-09T10:00:00+00:00", n_done: 2, n_total: 2,
+    n_resolved: 2, pass_rate: 1, status: "complete", tasks: [],
+  };
+  ctx.MIXED = {
+    ...base,
+    runs: [poly, ...base.runs],
+    datasets: [
+      { id: "terminal-bench@2.0", label: "Terminal-Bench 2", slug: "tb2",
+        n_tasks: 89, runs: base.runs.map((r) => r.run_id) },
+      { id: "aider/aider-polyglot", label: "Aider Polyglot", slug: "polyglot",
+        n_tasks: 225, runs: [poly.run_id] },
+    ],
+  };
+  inCtx("state.data = MIXED; state.runPick = null; state.hidden = new Set();"
+        + "state.hidePartial = false; state.dataset = 'terminal-bench@2.0';");
+
+  const filters = inCtx("renderFilters(state.data, visibleRuns(state.data))");
+  cases.push(["the benchmark selector renders", /id="dataset-select"/.test(filters)]);
+  cases.push(["...listing every benchmark this model ran",
+    /Terminal-Bench 2/.test(filters) && /Aider Polyglot/.test(filters)]);
+  cases.push(["...with the selected one preselected",
+    /value="terminal-bench@2\.0" selected/.test(filters)]);
+  // Shown even with one benchmark: it is what tells you which one you are
+  // looking at, and a scope you cannot see is a scope you forget.
+  inCtx("state.data = SEED;");
+  cases.push(["...and shown even when there is only one to pick",
+    /id="dataset-select"/.test(inCtx("renderFilters(state.data, visibleRuns(state.data))"))]);
+  inCtx("state.data = MIXED;");
+
+  const scoped = inCtx("runsInScope(state.data).map((r) => r.run_id)");
+  // Counted against the seed rather than a literal: earlier blocks append to
+  // SEED, so a hard-coded total here would be asserting their run count.
+  cases.push(["only the selected benchmark's runs are in scope",
+    scoped.length === base.runs.length && !scoped.includes(poly.run_id)]);
+
+  // The bug the whole scope exists to prevent: a harness that only ran the
+  // other benchmark must not be ranked in this one.
+  const lb = inCtx("renderLeaderboard(visibleRuns(state.data))");
+  cases.push(["the leaderboard excludes the other benchmark's harness",
+    !/Codex CLI/.test(lb)]);
+
+  // Controls offering something that cannot affect the view read as broken.
+  cases.push(["harness chips are scoped to the benchmark",
+    !/data-harness="codex"/.test(filters)]);
+  cases.push(["the run picker is scoped too",
+    !inCtx("renderRunPicker(state.data)").includes(poly.run_id)]);
+
+  inCtx("state.dataset = 'aider/aider-polyglot';");
+  const other = inCtx("visibleRuns(state.data).map((r) => r.run_id)");
+  cases.push(["switching benchmark switches the runs",
+    other.length === 1 && other[0] === poly.run_id]);
+  const otherLb = inCtx("renderLeaderboard(visibleRuns(state.data))");
+  cases.push(["...and the leaderboard follows",
+    /Codex CLI/.test(otherLb) && !/Hermes Agent/.test(otherLb)]);
+
+  // A run recorded before --dataset was captured is its own bucket, not a run
+  // that silently disappears.
+  ctx.LEGACY_DS = { ...base, runs: [{ ...poly, dataset: null }] };
+  inCtx("state.data = LEGACY_DS; state.dataset = '';");
+  cases.push(["a run with no recorded dataset is still selectable",
+    inCtx("visibleRuns(state.data).length") === 1]);
+  cases.push(["...and is labelled rather than left blank",
+    /unknown benchmark/.test(
+      inCtx("renderFilters(state.data, visibleRuns(state.data))"))]);
+
+  // null is "not resolved yet", distinct from "" -- render() resolves it before
+  // drawing, and until it does nothing may silently vanish.
+  inCtx("state.data = MIXED; state.dataset = null;");
+  cases.push(["an unresolved scope shows everything rather than nothing",
+    inCtx("runsInScope(state.data).length") === base.runs.length + 1]);
+
+  inCtx("state.data = SEED; state.dataset = 'terminal-bench@2.0';");
 
   for (const [label, ok] of cases) {
     console.log(`${ok ? "PASS" : "FAIL"}  ${label}`);

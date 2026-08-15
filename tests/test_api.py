@@ -12,6 +12,7 @@ validated, or redacted before it would reach either.
     python tests/test_api.py
 """
 
+import http.client
 import json
 import re
 import shutil
@@ -121,6 +122,79 @@ def main() -> int:
             415,
         )
         check("preflight is unanswered", call("OPTIONS", "/api/run")[0], 405)
+
+        # A rejected request has to come back as its status, not as a dropped
+        # connection. The server reads the request body before replying for
+        # exactly this reason: on Windows, closing a socket with unread request
+        # data in it sends an RST, and the client raises WSAECONNABORTED
+        # (WinError 10053) instead of seeing the 415.
+        #
+        # Sized deliberately. The rejected bodies above are two bytes and
+        # normally sit in the receive buffer already, so skipping the drain only
+        # aborts occasionally -- it showed up as a 1-in-40 flake that read like
+        # an environment problem. A body well past the buffer cannot be already
+        # arrived, so this fails every time the drain is skipped rather than
+        # rarely. Keep it large, or this stops testing anything -- but under
+        # MAX_BODY_BYTES: an oversized body is deliberately *not* drained, and
+        # the connection close is the honest signal there rather than a bug.
+        big = {"payload": "x" * 200_000}
+        check(
+            "a rejected large body still returns its status",
+            call("POST", "/api/export", big,
+                 ctype="application/x-www-form-urlencoded")[0],
+            415,
+        )
+        # Same path, valid content type but no credential: rejected before the
+        # body is looked at, which is the other order the drain has to cover.
+        check(
+            "...and so does one rejected for its token",
+            call("POST", "/api/export", big, token="wrong")[0],
+            403,
+        )
+
+        # The deterministic form of the same check, and the one that actually
+        # pins the contract. Whether a skipped drain aborts the connection
+        # depends on how much of the body the OS had already buffered, which is
+        # why the version above is a coin flip rather than a test -- it caught
+        # this at roughly 1 in 40.
+        #
+        # Reusing the connection removes the luck. This server speaks HTTP/1.1,
+        # so a rejected request must leave the socket positioned at the start of
+        # the next request. If the body was not drained, the leftover bytes are
+        # read as the next request line and the second call fails every time,
+        # regardless of buffering.
+        def reuse_after(status_wanted: int, **kw) -> tuple[int, int]:
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=30)
+            try:
+                headers = {"Content-Type": kw.get("ctype", "application/json")}
+                # A valid token by default: the content-type gate sits *behind*
+                # authorization, so an anonymous request never reaches it and
+                # would silently test the wrong rejection path.
+                token = kw.get("token", TOKEN)
+                if token is not None:
+                    headers[server_mod.TOKEN_HEADER] = token
+                conn.request("POST", "/api/export",
+                             body=json.dumps(big).encode(), headers=headers)
+                first = conn.getresponse()
+                first.read()
+                # Same connection, deliberately.
+                conn.request("GET", "/api/health")
+                second = conn.getresponse()
+                second.read()
+                return first.status, second.status
+            finally:
+                conn.close()
+
+        first, second = reuse_after(415, ctype="application/x-www-form-urlencoded")
+        check("a wrong content type is rejected without poisoning the connection",
+              (first, second), (415, 200))
+        first, second = reuse_after(403, token="wrong")
+        check("...and so is a bad token", (first, second), (403, 200))
+
+        # The server must still be usable afterwards; an aborted connection
+        # would otherwise be masked by every later check opening a fresh one.
+        check("...leaving the server healthy",
+              call("GET", "/api/health", token=None)[0], 200)
 
         # -- read-only mode -------------------------------------------------
         # An empty token must not compare equal to an absent header.

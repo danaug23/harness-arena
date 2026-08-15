@@ -52,6 +52,7 @@ def make_run(**over):
         "model_fingerprint": "fp1", "model_label": "M", "n_done": 3,
         "model_quant": "TESTQ", "model_params": 1e11, "model_n_ctx": 131072,
         "is_partial": True, "subset": "stratified-25",
+        "dataset": "terminal-bench@2.0",
         "agent_timeout_multiplier": 8.0, "status": "complete",
         "started_at": "2026-08-09T01:00:00+00:00",
         "tasks": [
@@ -62,6 +63,18 @@ def make_run(**over):
     }
     run.update(over)
     return run
+
+
+def index_of(runs):
+    """build_index over hand-made runs, for the parts that are not comparisons."""
+    import bench.collect as collect
+
+    original = collect.load_runs
+    collect.load_runs = lambda runs_dir=None: runs
+    try:
+        return build_index(Path("."))
+    finally:
+        collect.load_runs = original
 
 
 def pairs(runs):
@@ -141,6 +154,37 @@ def test_pairing() -> None:
 
     b_empty = make_run(run_id="b", harness="omp", n_done=0, tasks=[])
     check("run with no results does NOT pair", len(pairs([a, b_empty])), 0)
+
+    # Two benchmarks are not one experiment. This is the clause multi-benchmark
+    # support needed and did not get: a full Terminal-Bench 2 run and a full
+    # aider-polyglot run both carry subset=None and is_partial=False, so every
+    # other rule here passes and they paired. Task names rarely collide across
+    # datasets, which makes the result worse rather than harmless -- the
+    # comparison renders with an empty shared set, reading as two harnesses that
+    # agreed on nothing rather than as two runs that were never comparable.
+    b_ds = make_run(run_id="b", harness="omp", dataset="aider/aider-polyglot")
+    check("different dataset does NOT pair", len(pairs([a, b_ds])), 0)
+
+    # Same dataset still pairs -- the clause must not have cost the real case.
+    b_same_ds = make_run(run_id="b", harness="omp", dataset="terminal-bench@2.0")
+    check("  but the same dataset still does", len(pairs([a, b_same_ds])), 1)
+
+    # A run recorded before --dataset was captured carries None. Two of those
+    # are the same unknown, not two different benchmarks.
+    a_old = make_run(run_id="a", harness="hermes", dataset=None)
+    b_old = make_run(run_id="b", harness="omp", dataset=None)
+    check("two runs with no recorded dataset still pair", len(pairs([a_old, b_old])), 1)
+    check("  but not against one that has a dataset", len(pairs([a, b_old])), 0)
+
+    # The index has to offer the benchmarks it holds, or the page cannot scope
+    # itself to one.
+    index_datasets = index_of([a, b_ds])["datasets"]
+    check("the index lists each benchmark once", len(index_datasets), 2)
+    check("  labelled from the catalog",
+          sorted(d["label"] for d in index_datasets),
+          ["Aider Polyglot", "Terminal-Bench 2"])
+    check("  with the run-directory slug",
+          sorted(d["slug"] for d in index_datasets), ["polyglot", "tb2"])
 
 
 def test_wilson() -> None:

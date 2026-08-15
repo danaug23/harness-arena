@@ -338,19 +338,150 @@ def test_paths_follow_the_install() -> None:
     """
     import bench
 
-    check("a checkout keeps its data beside the code", bench.WORKSPACE, bench.ROOT)
-    check("...so runs land where they always did",
-          bench.RUNS_DIR, bench.ROOT / "runs")
-    check("...and the label cache does too",
-          bench.MODELS_CACHE_PATH, bench.ROOT / "bench" / "models.json")
-    # The packaged catalog and the one you edit are the same file in a checkout,
-    # which is what makes `registry.yaml` a committed, reviewable artifact here.
-    check("...and the catalog is the committed one",
-          bench.registry_path(), bench.ROOT / "harnesses" / "registry.yaml")
+    # Asserted per layout rather than assuming a checkout. CI installs with
+    # `pip install -e .`, so the checkout branch is the one it exercises -- and
+    # a suite that only ever asserts that branch cannot catch a wheel install
+    # writing into site-packages, which is the failure this split exists to
+    # prevent. Both branches are checked so whichever one is running is proven.
+    if bench.IS_CHECKOUT:
+        check("a checkout keeps its data beside the code", bench.WORKSPACE, bench.ROOT)
+        check("...so runs land where they always did",
+              bench.RUNS_DIR, bench.ROOT / "runs")
+        check("...and the label cache does too",
+              bench.MODELS_CACHE_PATH, bench.ROOT / "bench" / "models.json")
+        # The packaged catalog and the one you edit are the same file in a
+        # checkout, which is what makes `registry.yaml` a committed, reviewable
+        # artifact here.
+        check("...and the catalog is the committed one",
+              bench.registry_path(), bench.ROOT / "harnesses" / "registry.yaml")
+        # There is only one catalog here, so there is nothing it can drift from.
+        from bench import registry as registry_mod
+
+        check("...so a checkout is never reported as drifted",
+              registry_mod.catalog_drift()["applies"], False)
+    else:
+        # Installed from a wheel, ROOT is site-packages. Nothing the user
+        # creates may land there: the next `pip install` is entitled to replace
+        # it, and a shared or read-only install fails outright.
+        cwd = Path.cwd().resolve()
+        check("an installed copy keeps your data where you ran from",
+              bench.WORKSPACE, cwd)
+        check("...so runs do not land in site-packages",
+              bench.RUNS_DIR, cwd / "runs")
+        check("...nor does the label cache",
+              bench.MODELS_CACHE_PATH, cwd / ".harness-arena" / "models.json")
+        # Reads fall back to the packaged catalog until the first edit, which is
+        # what makes a fresh install work with no setup at all.
+        check("...and the catalog read is the packaged one until you edit it",
+              bench.registry_path(), bench.PACKAGED_REGISTRY_PATH)
+        check("...while writes are aimed at your own copy",
+              bench.USER_REGISTRY_PATH, cwd / ".harness-arena" / "registry.yaml")
+
+    # True either way: the package has to carry its own catalog and subsets, or
+    # a wheel install has no harnesses at all.
     check("the packaged catalog ships with the harnesses",
           bench.PACKAGED_REGISTRY_PATH.exists(), True)
     check("a packaged subset is discoverable",
           "stratified-25" in bench.subset_names(), True)
+
+
+def test_catalog_drift_is_detectable() -> None:
+    """An installed copy's catalog stops receiving upgrades, and says nothing.
+
+    On the first edit `save()` writes a full copy under `.harness-arena/` and
+    `registry_path()` prefers it from then on. A later `pip install -U` then
+    updates the code and the packaged catalog while yours stays put. That takes
+    the harness `version:` pins with it -- the upgraded release installs the old
+    harness build under the new release's name, which is exactly the failure the
+    pins exist to prevent, and nothing on screen says so.
+
+    Driven through real files rather than mocks: the bug was in which path wins,
+    so a test that stubs the paths would prove nothing.
+    """
+    import bench
+    from bench import registry as registry_mod
+
+    with tempfile.TemporaryDirectory() as raw:
+        root = Path(raw)
+        packaged = root / "packaged.yaml"
+        mine = root / "mine.yaml"
+
+        catalog = registry_mod.load(bench.PACKAGED_REGISTRY_PATH)
+
+        # Patched around the writes as well as the read: the provenance stamp is
+        # applied by save(), and only for an installed copy.
+        original = (registry_mod.IS_CHECKOUT, registry_mod.USER_REGISTRY_PATH,
+                    registry_mod.PACKAGED_REGISTRY_PATH)
+        registry_mod.IS_CHECKOUT = False
+        registry_mod.USER_REGISTRY_PATH = mine
+        registry_mod.PACKAGED_REGISTRY_PATH = packaged
+        try:
+            registry_mod.save(catalog, packaged)
+            registry_mod.save(catalog, mine)
+
+            # An upgrade lands in the packaged copy only: a new benchmark and a
+            # re-pinned harness, the two things a release actually changes here.
+            upgraded = registry_mod.load(packaged)
+            upgraded["datasets"].append(
+                {"id": "brand-new/bench-9", "label": "Brand New",
+                 "slug": "bnb9", "tasks": 42}
+            )
+            upgraded["harnesses"]["omp"]["version"] = "v99.0.0"
+            upgraded["harnesses"]["a-new-harness"] = {"label": "New", "agent": "x:Y"}
+            registry_mod.save(upgraded, packaged)
+
+            report = registry_mod.catalog_drift()
+        finally:
+            (registry_mod.IS_CHECKOUT, registry_mod.USER_REGISTRY_PATH,
+             registry_mod.PACKAGED_REGISTRY_PATH) = original
+
+    check("a forked catalog is recognised as one", report["applies"], True)
+    check("...and reported as stale once the package moves on",
+          report["stale"], True)
+    # The pin is the one that costs a measurement rather than a feature.
+    check("a re-pinned harness is reported",
+          report["version_changes"],
+          [{"harness": "omp", "yours": "v17.3.1", "packaged": "v99.0.0"}])
+    check("a new benchmark is reported",
+          report["new_datasets"], ["brand-new/bench-9"])
+    check("a new harness is reported",
+          report["new_harnesses"], ["a-new-harness"])
+    # Provenance, so the gap can be named rather than guessed at.
+    check("the copy records which release it was forked from",
+          report["snapshot_of"], bench.__version__)
+
+
+def test_a_matching_catalog_is_not_reported_as_drifted() -> None:
+    """The warning has to stay quiet when nothing is wrong, or it is ignored."""
+    import bench
+    from bench import registry as registry_mod
+
+    with tempfile.TemporaryDirectory() as raw:
+        root = Path(raw)
+        packaged, mine = root / "packaged.yaml", root / "mine.yaml"
+        catalog = registry_mod.load(bench.PACKAGED_REGISTRY_PATH)
+
+        original = (registry_mod.IS_CHECKOUT, registry_mod.USER_REGISTRY_PATH,
+                    registry_mod.PACKAGED_REGISTRY_PATH)
+        registry_mod.IS_CHECKOUT = False
+        registry_mod.USER_REGISTRY_PATH = mine
+        registry_mod.PACKAGED_REGISTRY_PATH = packaged
+        try:
+            registry_mod.save(catalog, packaged)
+            registry_mod.save(catalog, mine)
+            report = registry_mod.catalog_drift()
+            # A user edit that touches nothing the package ships is not drift.
+            edited = registry_mod.load(mine)
+            edited["defaults"]["n_concurrent"] = 7
+            registry_mod.save(edited, mine)
+            after_edit = registry_mod.catalog_drift()
+        finally:
+            (registry_mod.IS_CHECKOUT, registry_mod.USER_REGISTRY_PATH,
+             registry_mod.PACKAGED_REGISTRY_PATH) = original
+
+    check("an up-to-date copy is not stale", report["stale"], False)
+    check("...and your own settings are not mistaken for drift",
+          after_edit["stale"], False)
 
 
 def test_sampling_is_recorded_when_the_server_reports_it() -> None:
@@ -415,6 +546,8 @@ if __name__ == "__main__":
     test_context_window_resolution()
     test_context_floor_is_refused_up_front()
     test_paths_follow_the_install()
+    test_catalog_drift_is_detectable()
+    test_a_matching_catalog_is_not_reported_as_drifted()
     test_sampling_is_recorded_when_the_server_reports_it()
     print("\n" + ("FAILED: " + ", ".join(failures) if failures else "all checks passed"))
     raise SystemExit(1 if failures else 0)

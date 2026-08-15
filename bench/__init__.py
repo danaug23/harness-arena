@@ -1,4 +1,4 @@
-"""harness-arena: run Terminal-Bench 2 across agent harnesses on one model.
+"""harness-arena: run a Harbor benchmark across agent harnesses on one model.
 
 Every path the tool touches is resolved here, because where they land depends
 on how the tool was installed and getting that wrong is silent.
@@ -18,7 +18,7 @@ from pathlib import Path
 
 #: Single source of truth. pyproject reads this, so a release cannot ship
 #: a wheel whose --version disagrees with the version on the index.
-__version__ = "0.1.14"
+__version__ = "0.1.15"
 
 #: Where the code is. In a wheel install this is site-packages.
 ROOT = Path(__file__).resolve().parent.parent

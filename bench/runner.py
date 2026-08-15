@@ -27,6 +27,7 @@ from typing import Any
 import yaml
 
 from bench import REGISTRY_PATH, ROOT, WORKSPACE, subset_names, subset_path
+from bench import registry as registry_mod
 from bench.config import DEFAULT_CONTEXT_WINDOW, Config, ConfigError, scrub
 from bench.probe import ModelIdentity, add_endpoint_args, config_from_args, describe, resolve
 from bench.supervisor import clear_run_marker, write_run_marker
@@ -309,8 +310,47 @@ def new_batch_id(stamp: str) -> str:
     return f"{stamp}-{secrets.token_hex(3)}"
 
 
-def job_name(harness: str, model: ModelIdentity, stamp: str) -> str:
-    return f"{harness}__{model.slug}__{stamp}"
+def scope_name(
+    subset: str | None, n_tasks: int | None, include_tasks: list[str] | None
+) -> str:
+    """What a run covered, as one directory-name segment.
+
+    Three states, and they are not interchangeable: a *named* subset is a
+    deliberate experiment every harness ran identically, an ad-hoc task cap is a
+    smoke test that answers "does the adapter work", and neither is the full
+    dataset. `collect.py` already refuses to rank them against each other, and
+    this puts the same distinction in the name so it survives a directory
+    listing. Matches `scopeName` in the dashboard exactly.
+    """
+    if subset:
+        return re.sub(r"[^a-z0-9]+", "-", subset.lower()).strip("-") or "subset"
+    if n_tasks is not None or include_tasks:
+        return "smoke"
+    return "full"
+
+
+def job_name(
+    harness: str,
+    model: ModelIdentity,
+    stamp: str,
+    *,
+    dataset_slug: str,
+    scope: str,
+) -> str:
+    """The run directory name: what was measured, on what, over what, when.
+
+    Harness stays first because it always has. A job directory with no manifest
+    -- a bare `harbor run`, or one killed before the manifest landed -- is
+    identified by splitting this on `__` and taking the first field, so
+    inserting the new segments anywhere else would silently relabel every such
+    run as whatever now sits at index 0. See `collect.load_run`.
+
+    The dataset and the scope are here because they are the two facts that
+    decide whether two runs are the same experiment, and until now both existed
+    only inside the manifest -- so a directory listing showed a Terminal-Bench 2
+    run and an aider-polyglot run of the same harness as indistinguishable.
+    """
+    return f"{harness}__{model.slug}__{dataset_slug}__{scope}__{stamp}"
 
 
 def build_command(
@@ -337,6 +377,19 @@ def build_command(
     debug_capture: bool = False,
 ) -> tuple[list[str], dict[str, str]]:
     """Return (argv, host_env_overrides) for one harness run."""
+    # Caught here rather than left to argv construction. A None splices into the
+    # command line as a None and dies several frames later inside scrub() with
+    # "expected string or bytes-like object", which reads as a bug in credential
+    # redaction rather than as a catalog missing its `defaults.dataset` -- the
+    # state an installed copy lands in when its own registry.yaml predates the
+    # `datasets:` block.
+    if not dataset or not str(dataset).strip():
+        raise ConfigError(
+            "No dataset to run. Pass --dataset, or set `defaults.dataset` in "
+            f"{REGISTRY_PATH}.\n"
+            "An installed copy keeps its own catalog, which a package upgrade "
+            "does not rewrite; delete it to pick the packaged one back up."
+        )
     check_context_floor(harness_id, spec, model, config)
     subs = _substitutions(model, config)
     spec = _fill(spec, subs)
@@ -575,7 +628,15 @@ def run_one(
     spec = registry["harnesses"][harness_id]
     run_window, run_window_source = effective_context(model, config)
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-    name = job_name(harness_id, model, stamp)
+    name = job_name(
+        harness_id,
+        model,
+        stamp,
+        # Resolved from the catalog already in hand rather than by re-reading
+        # it, so the name cannot describe a different dataset than the argv.
+        dataset_slug=registry_mod.dataset_slug(dataset, registry),
+        scope=scope_name(subset, n_tasks, include_tasks),
+    )
     job_dir = jobs_dir / name
 
     argv, host_env = build_command(

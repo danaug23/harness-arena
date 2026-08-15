@@ -269,6 +269,52 @@ def cmd_doctor(argv: list[str]) -> int:
             _check("docker daemon running", False, str(exc))
             failures.append("docker daemon")
 
+    # --- harness catalog ---
+    #
+    # An installed copy forks its own catalog on the first edit and reads that
+    # one forever after, so a later `pip install -U` updates the code and the
+    # packaged catalog while yours stays where it was. Silent, and it takes the
+    # harness `version:` pins with it -- an upgraded release installing the old
+    # harness build under the new release's name. Reported here because doctor
+    # is where someone looks when a run is behaving unlike the release notes.
+    try:
+        from bench import registry as registry_mod
+
+        drift = registry_mod.catalog_drift()
+        _check("harness catalog", True, str(registry_mod.registry_path()))
+        if drift["applies"]:
+            origin = drift["snapshot_of"] or "a release before this was recorded"
+            print(
+                f"        your own copy, forked from {origin}; "
+                f"package is {drift['package_version']}"
+            )
+        if drift["stale"]:
+            print(
+                "  [warn] Your catalog is missing what the installed package ships.\n"
+                "         It was copied on your first edit and nothing updates it."
+            )
+            for change in drift["version_changes"]:
+                print(
+                    f"         harness {change['harness']}: you pin "
+                    f"{change['yours']!r}, the package ships "
+                    f"{change['packaged']!r}"
+                )
+            if drift["new_datasets"]:
+                print(f"         benchmarks you do not have: "
+                      f"{', '.join(drift['new_datasets'])}")
+            if drift["new_harnesses"]:
+                print(f"         harnesses you do not have: "
+                      f"{', '.join(drift['new_harnesses'])}")
+            print(
+                f"         Nothing is merged for you: a pin you changed on purpose\n"
+                f"         and one you never received look identical in the file.\n"
+                f"         Fix: edit {drift['user_path']}\n"
+                f"         Or start over from the packaged catalog by deleting it."
+            )
+            failures.append("stale catalog")
+    except Exception as exc:  # noqa: BLE001 - never let a report break doctor
+        _check("harness catalog", False, str(exc))
+
     # --- disk ---
     try:
         runs_dir = config.resolved_runs_dir()

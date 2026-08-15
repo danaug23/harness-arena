@@ -19,7 +19,13 @@ from typing import Any
 
 import yaml
 
-from bench import USER_REGISTRY_PATH, registry_path
+from bench import (
+    IS_CHECKOUT,
+    PACKAGED_REGISTRY_PATH,
+    USER_REGISTRY_PATH,
+    __version__,
+    registry_path,
+)
 from bench.config import looks_like_key
 
 #: Harness ids become directory-name components, so keep them boring.
@@ -55,8 +61,14 @@ HEADER = """\
 # `datasets:` is the benchmark catalog the dashboard offers in its dropdown.
 # `id` is passed to `harbor run --dataset` verbatim, so it must be a dataset
 # Harbor can resolve -- see hub.harborframework.com/datasets. `tasks` is
-# display only. The remaining fields are what pre-pull needs, and which one a
-# dataset uses depends on how it ships its environments:
+# display only. `slug` is the short name that becomes a segment of every run
+# directory, so it is bounded at 12 characters: a run directory already carries
+# a harness, a model and a timestamp, and Windows still enforces a 260-character
+# path limit on the trial directories written underneath it. Omitting it derives
+# one from the id, which works but is longer and less recognisable.
+#
+# The remaining fields are what pre-pull needs, and which one a dataset uses
+# depends on how it ships its environments:
 #
 #   image_repo/image_tag  the dataset publishes one prebuilt image per task, so
 #                         pre-pull fetches <repo>/<task>:<tag> for every task.
@@ -77,6 +89,14 @@ HEADER = """\
 """
 
 _ID = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
+
+#: A dataset slug becomes one `__`-separated segment of every run directory
+#: name, so it is bounded for the same reason harness ids are. 12 characters is
+#: what is left once a harness id, a 57-character model slug, a scope and a
+#: timestamp have taken their share and the trial directories Harbor writes
+#: underneath still have to fit inside Windows' 260-character path limit.
+DATASET_SLUG_MAX = 12
+_DATASET_SLUG = re.compile(rf"^[a-z0-9][a-z0-9-]{{0,{DATASET_SLUG_MAX - 1}}}$")
 
 #: Substitutions the runner fills in. Anything else in braces is a typo that
 #: would otherwise fail at run time with a bare KeyError.
@@ -116,6 +136,84 @@ def load(path: Path | str | None = None) -> dict[str, Any]:
     return data
 
 
+def datasets(data: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    """The catalog's dataset entries, skipping anything malformed."""
+    catalog = data if data is not None else load()
+    return [e for e in (catalog.get("datasets") or []) if isinstance(e, dict)]
+
+
+def dataset_entry(dataset: str | None, data: dict[str, Any] | None = None) -> dict[str, Any]:
+    """The catalog entry for *dataset*, falling back to the default one.
+
+    Returns a bare ``{"id": ...}`` for a dataset that is not catalogued, which
+    is a supported state: ``--dataset`` accepts anything Harbor can resolve, and
+    the catalog only has to know about the ones the dashboard offers.
+    """
+    catalog = data if data is not None else load()
+    wanted = dataset or (catalog.get("defaults") or {}).get("dataset")
+    for entry in datasets(catalog):
+        if entry.get("id") == wanted:
+            return entry
+    return {"id": wanted}
+
+
+def derive_dataset_slug(dataset: str) -> str:
+    """A short, filesystem-safe name for a dataset that has no catalogued slug.
+
+    Harbor dataset ids are ``org/name`` or ``name@version``, and the org is the
+    least distinguishing part of one (``swe-bench/swe-bench-verified``), so the
+    name is what survives. The version is dropped rather than encoded: it would
+    cost most of the budget, and the manifest records the id in full.
+    """
+    name = str(dataset or "").split("@", 1)[0].rstrip("/")
+    name = name.rsplit("/", 1)[-1]
+    slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+    return slug[:DATASET_SLUG_MAX].rstrip("-") or "dataset"
+
+
+def dataset_slug(dataset: str | None, data: dict[str, Any] | None = None) -> str:
+    """The run-directory segment naming which benchmark a run measured.
+
+    Catalogued slugs win because they are chosen to be recognisable; a slug that
+    would not survive a round trip through a directory name is ignored rather
+    than written, since the name is the one place this fact is visible without
+    opening a manifest.
+    """
+    entry = dataset_entry(dataset, data)
+    declared = entry.get("slug")
+    if isinstance(declared, str) and _DATASET_SLUG.match(declared):
+        return declared
+    return derive_dataset_slug(str(entry.get("id") or dataset or ""))
+
+
+def validate_dataset_slugs(data: dict[str, Any]) -> None:
+    """Refuse a catalog whose slugs would collide or would not fit in a path.
+
+    Two datasets sharing a slug is the failure worth catching here: the run
+    directories stop distinguishing them, which is exactly the mislabelling the
+    slug exists to prevent, and nothing downstream would report it.
+    """
+    seen: dict[str, str] = {}
+    for entry in datasets(data):
+        declared = entry.get("slug")
+        if declared is None:
+            continue
+        if not isinstance(declared, str) or not _DATASET_SLUG.match(declared):
+            raise RegistryError(
+                f"Dataset {entry.get('id')!r} has slug {declared!r}. Use "
+                f"lowercase letters, digits and '-', starting with a letter or "
+                f"digit, at most {DATASET_SLUG_MAX} characters -- it becomes a "
+                f"segment of every run directory name."
+            )
+        if declared in seen:
+            raise RegistryError(
+                f"Datasets {seen[declared]!r} and {entry.get('id')!r} both use "
+                f"slug {declared!r}. Run directories would stop telling them "
+                f"apart."
+            )
+        seen[declared] = str(entry.get("id"))
+
+
 def save(data: dict[str, Any], path=None) -> None:
     """Write the catalog back, keeping one generation of backup.
 
@@ -123,14 +221,96 @@ def save(data: dict[str, Any], path=None) -> None:
     accumulated result of debugging each upstream's quirks -- worth one cheap
     undo.
     """
+    # Checked on the way out rather than on the way in: every edit path funnels
+    # through here, and a colliding slug is only a problem once it is on disk.
+    validate_dataset_slugs(data)
     # Writes land on the copy you own. Installed from a wheel that is not the
     # packaged catalog, which lives in site-packages and is not yours to edit.
     target = Path(path) if path else USER_REGISTRY_PATH
     target.parent.mkdir(parents=True, exist_ok=True)
     if target.exists():
         shutil.copy2(target, target.with_suffix(".yaml.bak"))
+
+    # Stamp which release this copy was forked from, so `catalog_drift` can
+    # report the gap precisely instead of inferring it. Installed only: in a
+    # checkout this file is committed, and an extra key here would be churn in
+    # every diff. See `catalog_drift` for why the stamp matters.
+    if not IS_CHECKOUT:
+        data = {"snapshot_of": __version__, **data}
+
     body = yaml.dump(data, default_flow_style=False, sort_keys=False, width=88)
     target.write_text(HEADER + body, encoding="utf-8")
+
+
+def catalog_drift() -> dict[str, Any]:
+    """What a package upgrade is holding that your own catalog copy never got.
+
+    An installed copy reads the packaged catalog until the first edit, at which
+    point `save()` writes a full copy under `.harness-arena/` and
+    `registry_path()` prefers that copy forever. From then on `pip install -U`
+    updates the code and the *packaged* catalog, and nothing updates yours.
+
+    That is silent, and it is not cosmetic. The catalog carries the harness
+    `version:` pins, so an upgrade that re-pins a harness leaves you installing
+    the old build under the new release's name -- which is precisely the "two
+    runs a week apart measure different harnesses under one name" failure the
+    pins exist to prevent. New `datasets:` entries go missing the same way.
+
+    Nothing is merged automatically. A version pin you changed on purpose and
+    one you simply never received are indistinguishable in the file, so guessing
+    would either discard your edit or silently keep a stale harness. Reporting
+    the difference lets you decide; `snapshot_of` says which release yours came
+    from. Empty in a checkout, where there is only ever one catalog.
+    """
+    report: dict[str, Any] = {
+        "applies": False,
+        "user_path": str(USER_REGISTRY_PATH),
+        "packaged_path": str(PACKAGED_REGISTRY_PATH),
+        "snapshot_of": None,
+        "package_version": __version__,
+        "new_datasets": [],
+        "new_harnesses": [],
+        "version_changes": [],
+        "stale": False,
+    }
+    if IS_CHECKOUT or not USER_REGISTRY_PATH.exists():
+        return report
+    if USER_REGISTRY_PATH.resolve() == PACKAGED_REGISTRY_PATH.resolve():
+        return report
+
+    try:
+        mine = load(USER_REGISTRY_PATH)
+        theirs = load(PACKAGED_REGISTRY_PATH)
+    except (OSError, RegistryError, yaml.YAMLError):
+        # A catalog too broken to read is a louder problem than drift, and it is
+        # already reported by whatever tried to use it.
+        return report
+
+    report["applies"] = True
+    report["snapshot_of"] = mine.get("snapshot_of")
+
+    my_datasets = {str(d.get("id")) for d in datasets(mine)}
+    report["new_datasets"] = [
+        str(d.get("id")) for d in datasets(theirs) if str(d.get("id")) not in my_datasets
+    ]
+
+    my_harnesses = mine.get("harnesses") or {}
+    their_harnesses = theirs.get("harnesses") or {}
+    report["new_harnesses"] = [k for k in their_harnesses if k not in my_harnesses]
+    for key, spec in their_harnesses.items():
+        if key not in my_harnesses or not isinstance(spec, dict):
+            continue
+        theirs_version = spec.get("version")
+        mine_version = (my_harnesses.get(key) or {}).get("version")
+        if theirs_version != mine_version:
+            report["version_changes"].append(
+                {"harness": key, "yours": mine_version, "packaged": theirs_version}
+            )
+
+    report["stale"] = bool(
+        report["new_datasets"] or report["new_harnesses"] or report["version_changes"]
+    )
+    return report
 
 
 def _check_values(spec: Any, where: str = "") -> None:

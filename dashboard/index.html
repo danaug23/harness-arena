@@ -195,9 +195,11 @@ h1 {
 }
 .filter-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 14px; }
 .filters .spacer { flex: 1 1 auto; }
-/* The model name is long and the column is narrow, so let the control take the
-   width it has rather than pushing the row wider than the panel. */
-.filters select#model-select { width: 100%; min-width: 0; }
+/* The model and benchmark names are long and the column is narrow, so let the
+   controls take the width they have rather than pushing the row wider than the
+   panel. */
+.filters select#model-select,
+.filters select#dataset-select { width: 100%; min-width: 0; }
 .filters .filter-group { min-width: 0; }
 .filter-group { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
 .filter-label {
@@ -786,7 +788,8 @@ footer {
   /* Back to a full-width strip: in one column there is no narrow column to fit,
      and stacking the controls would just make the header tall for no gain. */
   .filters { flex-direction: row; flex-wrap: wrap; align-items: center; gap: 8px 18px; }
-  .filters select#model-select { width: auto; }
+  .filters select#model-select,
+  .filters select#dataset-select { width: auto; }
   .panel-body { max-height: 60vh; }
   .panel.feed-panel .panel-body { height: 55vh; max-height: none; }
 }
@@ -1049,6 +1052,10 @@ const state = {
   data: null,
   activity: null,       // live tail of the in-flight trial
   model: null,          // selected model fingerprint
+  // Selected benchmark, as the dataset id (""for runs recorded without one).
+  // Scopes the view alongside `model`: every total, ranking and comparison on
+  // the results page is meaningful only within one benchmark.
+  dataset: null,
   hidden: new Set(),    // harness ids toggled off
   hidePartial: false,   // smoke runs are shown until you say otherwise
   // Which runs to show, by run_id. null means all of them -- distinct from an
@@ -1162,11 +1169,53 @@ function modelsOf(data) {
   return data.models || [];
 }
 
+/* Runs for the selected model, across every benchmark. Only two things read
+   this: the benchmark selector, which has to know which benchmarks this model
+   actually ran, and the smoke-filter count, which is scoped separately. */
 function runsForModel(data) {
   const key = state.model;
   return (data.runs || []).filter(
     (r) => (r.model_fingerprint || r.model_label) === key
   );
+}
+
+/* A run recorded before --dataset was captured carries none, which is still a
+   scope -- one bucket, labelled as unknown, rather than a run that vanishes. */
+function datasetKey(run) {
+  return run.dataset || "";
+}
+
+/* The benchmarks the selected model has runs for, newest first, labelled from
+   the catalog where collect could resolve one. */
+function datasetsOf(data) {
+  const counts = new Map();
+  for (const r of runsForModel(data)) {
+    const key = datasetKey(r);
+    if (!counts.has(key)) {
+      const known = (data.datasets || []).find((d) => (d.id || "") === key);
+      counts.set(key, {
+        key,
+        label: (known && known.label) || key || "unknown benchmark",
+        n: 0,
+      });
+    }
+    counts.get(key).n += 1;
+  }
+  return [...counts.values()].sort((a, b) => a.label.localeCompare(b.label));
+}
+
+/* Runs in the current scope: one model AND one benchmark.
+   Everything that totals, ranks, charts or compares reads this rather than
+   runsForModel. Two benchmarks pooled into one pass rate is an average over
+   different denominators -- 89 Terminal-Bench tasks and 225 polyglot ones --
+   and nothing on screen would reveal that it happened. */
+function runsInScope(data) {
+  // null means "not scoped yet", the same distinction `runPick` draws: render()
+  // resolves it to a real benchmark before anything is drawn, and until then
+  // every run counts. An empty string is a real scope -- the bucket for runs
+  // recorded before --dataset was captured -- so it is not the same as null.
+  if (state.dataset === null) return runsForModel(data);
+  return runsForModel(data).filter((r) => datasetKey(r) === state.dataset);
 }
 
 /* An ad-hoc "-Tasks 3" run answers "does the adapter work"; a *named* subset
@@ -1177,7 +1226,7 @@ function isSmoke(run) {
 }
 
 function visibleRuns(data) {
-  return runsForModel(data).filter(
+  return runsInScope(data).filter(
     (r) => !state.hidden.has(r.harness)
         && !(state.hidePartial && isSmoke(r))
         && (state.runPick === null || state.runPick.has(r.run_id))
@@ -1200,7 +1249,10 @@ function scopeName(run) {
    name, which is how they have always been grouped. Newest sweep first. */
 function runGroups(data) {
   const groups = new Map();
-  runsForModel(data).forEach((r) => {
+  // Scoped, not model-wide: a sweep that ran a different benchmark cannot be
+  // switched back on into this view, so offering it would be a control that
+  // silently does nothing.
+  runsInScope(data).forEach((r) => {
     const key = r.batch_id || `legacy:${scopeName(r)}`;
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(r);
@@ -2070,14 +2122,16 @@ function renderFilters(data, runs) {
   const models = modelsOf(data);
   const harnesses = [];
   const seen = new Set();
-  runsForModel(data).forEach((r) => {
+  // Only harnesses that ran the selected benchmark. A chip for one that did not
+  // is permanently inert, and toggling it looks broken rather than empty.
+  runsInScope(data).forEach((r) => {
     if (!seen.has(r.harness)) {
       seen.add(r.harness);
       harnesses.push({ id: r.harness, label: r.harness_label });
     }
   });
 
-  const scoped = runsForModel(data);
+  const scoped = runsInScope(data);
   const conc = new Set(scoped.map((r) => r.n_concurrent).filter((c) => c != null));
   const mult = new Set(
     scoped.map((r) => r.agent_timeout_multiplier).filter((m) => m != null)
@@ -2102,15 +2156,21 @@ function renderFilters(data, runs) {
   // What the smoke filter is removing right now: every clause of visibleRuns
   // except the filter itself. Reported so a missing run is always accounted
   // for on screen rather than leaving the reader to wonder where it went.
-  const nSmokeHidden = runsForModel(data).filter(
+  const nSmokeHidden = runsInScope(data).filter(
     (r) => !state.hidden.has(r.harness)
         && isSmoke(r)
         && (state.runPick === null || state.runPick.has(r.run_id))
   ).length;
 
-  // Order is deliberate: what you are looking at (model, then its headline
-  // numbers), then what you are filtering out of it. The selectors used to
-  // share one line with the model; in a single column they read as a sequence.
+  // Order is deliberate: what you are looking at (model and benchmark, then the
+  // headline numbers for that pair), then what you are filtering out of it. The
+  // selectors used to share one line with the model; in a single column they
+  // read as a sequence.
+  //
+  // Benchmark sits beside model because it is the same kind of control: both
+  // scope the entire view, and neither is a filter you can leave off. A total
+  // pooled across benchmarks is not a weaker number, it is a meaningless one.
+  const benchmarks = datasetsOf(data);
   return `
     <div class="filters">
       <div class="filter-row">
@@ -2123,6 +2183,17 @@ function renderFilters(data, runs) {
                 ${esc(m.label)}${m.quant ? " — " + esc(m.quant) : ""} (${m.runs.length} run${m.runs.length === 1 ? "" : "s"})
               </option>`;
             }).join("")}
+          </select>
+        </div>
+      </div>
+      <div class="filter-row">
+        <div class="filter-group" style="flex:1 1 auto;min-width:0">
+          <span class="filter-label">benchmark</span>
+          <select id="dataset-select">
+            ${benchmarks.map((d) => `
+              <option value="${esc(d.key)}" ${d.key === state.dataset ? "selected" : ""}>
+                ${esc(d.label)} (${d.n} run${d.n === 1 ? "" : "s"})
+              </option>`).join("")}
           </select>
         </div>
       </div>
@@ -2175,6 +2246,19 @@ function render() {
   }
   if (!state.model || !models.some((m) => (m.fingerprint || m.label) === state.model)) {
     state.model = models[0].fingerprint || models[0].label;
+  }
+  // Resolved after the model, and re-resolved whenever the current choice is
+  // not among that model's benchmarks -- which is the normal case immediately
+  // after switching models, since not every model has run every benchmark.
+  // Defaults to the benchmark of the newest run rather than the first
+  // alphabetically: what you just started is what you came to look at.
+  const benchmarks = datasetsOf(data);
+  if (benchmarks.length
+      && (state.dataset === null || !benchmarks.some((d) => d.key === state.dataset))) {
+    const newest = runsForModel(data)
+      .slice()
+      .sort((a, b) => (b.started_at || "").localeCompare(a.started_at || ""))[0];
+    state.dataset = newest ? datasetKey(newest) : benchmarks[0].key;
   }
   // Stable color assignment: walk every run once, in a fixed order, so a
   // harness keeps its hue no matter which model or filter is selected.
@@ -2301,7 +2385,25 @@ function closeExpanded() {
 
 function wireEvents() {
   const sel = $("#model-select");
-  if (sel) sel.onchange = (e) => { state.model = e.target.value; render(); };
+  // Clearing the benchmark rather than keeping it: the new model may not have
+  // run the selected one, and render() re-resolves a null to that model's
+  // newest. Keeping it would leave the view empty with both selectors looking
+  // perfectly reasonable.
+  if (sel) sel.onchange = (e) => {
+    state.model = e.target.value;
+    state.dataset = null;
+    // Run ids are per-benchmark, so a pick made under the old scope selects
+    // nothing under the new one -- which reads as "this model has no runs".
+    state.runPick = null;
+    render();
+  };
+
+  const dsSel = $("#dataset-select");
+  if (dsSel) dsSel.onchange = (e) => {
+    state.dataset = e.target.value;
+    state.runPick = null;
+    render();
+  };
 
   document.querySelectorAll("[data-harness]").forEach((btn) => {
     btn.onclick = () => {

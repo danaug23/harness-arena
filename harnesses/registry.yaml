@@ -22,8 +22,14 @@
 # `datasets:` is the benchmark catalog the dashboard offers in its dropdown.
 # `id` is passed to `harbor run --dataset` verbatim, so it must be a dataset
 # Harbor can resolve -- see hub.harborframework.com/datasets. `tasks` is
-# display only. The remaining fields are what pre-pull needs, and which one a
-# dataset uses depends on how it ships its environments:
+# display only. `slug` is the short name that becomes a segment of every run
+# directory, so it is bounded at 12 characters: a run directory already carries
+# a harness, a model and a timestamp, and Windows still enforces a 260-character
+# path limit on the trial directories written underneath it. Omitting it derives
+# one from the id, which works but is longer and less recognisable.
+#
+# The remaining fields are what pre-pull needs, and which one a dataset uses
+# depends on how it ships its environments:
 #
 #   image_repo/image_tag  the dataset publishes one prebuilt image per task, so
 #                         pre-pull fetches <repo>/<task>:<tag> for every task.
@@ -143,28 +149,35 @@ allow_agent_hosts:
 datasets:
 - id: terminal-bench@2.0
   label: Terminal-Bench 2
+  slug: tb2
   tasks: 89
   image_repo: alexgshaw
   image_tag: '20251031'
 - id: terminal-bench-pro/terminal-bench-pro
   label: Terminal-Bench Pro
+  slug: tbpro
   tasks: 200
 - id: aider/aider-polyglot
   label: Aider Polyglot
+  slug: polyglot
   tasks: 225
   base_images:
   - buildpack-deps:jammy
 - id: swe-bench/swe-bench-verified
   label: SWE-bench Verified
+  slug: swebv
   tasks: 500
 - id: scale-ai/swe-bench-pro
   label: SWE-bench Pro
+  slug: swebpro
   tasks: 731
 - id: sierra-research/tau3-bench
   label: tau3-bench
+  slug: tau3
   tasks: 375
 - id: gaia/gaia
   label: GAIA
+  slug: gaia
   tasks: 165
 defaults:
   dataset: terminal-bench@2.0

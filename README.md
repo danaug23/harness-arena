@@ -5,7 +5,7 @@
 
 # harness-arena
 
-Benchmark **agent harnesses** against a model, on Terminal-Bench 2.
+Benchmark **agent harnesses** against a model, on any Harbor benchmark.
 
 The premise, from [Harrison Kinsley's *The right harness is all you
 need*](https://hkinsley.com/reflections/right-harness-is-all-you-need): hold the
@@ -36,9 +36,14 @@ that measurement repeatable on your own hardware and puts every run on one page.
   happens to serve all three dialects: Claude Code uses the Anthropic Messages
   API on `/v1/messages`, Codex uses the Responses API on `/responses`. See
   [Pointing the vendor CLIs at a local model](#pointing-the-vendor-clis-at-a-local-model).
-- **Benchmark**: [Terminal-Bench 2](https://www.tbench.ai) via
-  [Harbor](https://github.com/harbor-framework/harbor), the official harness,
-  in Docker.
+- **Benchmarks**: any dataset [Harbor](https://github.com/harbor-framework/harbor)
+  can resolve, in Docker. [Terminal-Bench 2](https://www.tbench.ai) is the default
+  and the one every number in this README was measured on; the `datasets:` catalog
+  in `harnesses/registry.yaml` also ships Terminal-Bench Pro, Aider Polyglot,
+  SWE-bench Verified and Pro, tau3-bench and GAIA, and the dashboard's Run tab picks
+  between them. Comparisons are always *within* one benchmark — a pass rate over 89
+  Terminal-Bench tasks and one over 225 polyglot tasks are different denominators,
+  so the results view scopes to one model and one benchmark at a time.
 
 Orchestration runs on Linux, macOS and Windows; task containers are Linux.
 
@@ -99,10 +104,18 @@ one-check task, and the checks are not equally hard. It answers "how close did
 the misses come", not "how good is this harness", which is why it is never
 ranked on and never replaces the rate.
 
-**Choosing what to look at.** The **runs** filter is a checkbox menu of every
-run for the selected model, grouped by scope (`stratified-25`, `smoke`, full
-dataset) and labelled with when each started, because selecting by name alone
-stops working the moment you re-run a subset, which is the normal case here.
+**Choosing what to look at.** Two selectors scope the whole page: **model** and
+**benchmark**. Both are scopes rather than filters, because nothing on this page
+means anything across either one — a pass rate pooled over 89 Terminal-Bench
+tasks and 225 aider-polyglot tasks is an average of different denominators, not
+a weaker number. Head-to-head pairing refuses to cross them for the same reason.
+The benchmark selector is shown even when you have run only one, so the scope is
+never left implicit.
+
+The **runs** filter is a checkbox menu of every run for the selected model and
+benchmark, grouped by scope (`stratified-25`, `smoke`, full dataset) and
+labelled with when each started, because selecting by name alone stops working
+the moment you re-run a subset, which is the normal case here.
 Pick one run, a whole group, or everything. Every panel follows it, including
 the run log, so what you selected and what you are looking at cannot disagree.
 
@@ -501,6 +514,20 @@ Work from a directory of your own, because that is where it keeps your files:
 
 Nothing is ever written next to the installed package, so an upgrade cannot
 take your runs with it and a read-only or shared install still works.
+
+**The catalog is the one row with a catch.** A PyPI install reads the packaged
+catalog until your first edit, at which point it saves a full copy under
+`.harness-arena/` and reads that one from then on. `pip install -U` updates the
+code and the packaged catalog; it does not touch yours. That matters because the
+catalog carries the harness `version:` pins, so a release that re-pins a harness
+leaves you installing the old build under the new release's name — and new
+`datasets:` entries never appear in the dropdown.
+
+Nothing is merged automatically: a pin you changed on purpose and one you never
+received look identical in the file. **`harness-arena doctor` reports the gap**,
+naming which pins and benchmarks differ and which release your copy was forked
+from, so you can apply what you want. Deleting `.harness-arena/registry.yaml`
+starts over from the packaged catalog. A clone has one catalog and cannot drift.
 
 Clone instead when you want to change the code, add an adapter, or keep the
 harness catalog under version control with the rest of your setup:
@@ -1352,6 +1379,23 @@ runs/                     Harbor job dirs (gitignored)
 `runs/`, `config.yaml` and `bench/models.json` are gitignored. The first is
 large and regenerable, the second may hold a credential, and the third records
 which weights are on *your* disk.
+
+Each run directory names what it measured, so a listing is readable without
+opening anything:
+
+```
+runs/
+  omp__qwen3-coder-30b-q4-k-m-a1b2c3d4__tb2__full__20260815T173206Z
+  hermes__qwen3-coder-30b-q4-k-m-a1b2c3d4__polyglot__stratified-25__20260815T181500Z
+       harness  model (label + fingerprint)   benchmark  scope   started (UTC)
+```
+
+The benchmark segment is the short `slug` from the `datasets:` catalog, and the
+scope is a subset name, `smoke` for an ad-hoc `--n-tasks` run, or `full`. Those
+are the facts that decide whether two runs are the same experiment; everything
+else that varies — context window, reasoning effort, time budget — is in the
+run's `harness-bench.json`, which is the actual record. The name is a human
+index, not the data.
 
 ---
 

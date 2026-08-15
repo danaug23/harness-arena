@@ -25,7 +25,7 @@ from bench import (
     REGISTRY_PATH,  # noqa: E402
     runner,  # noqa: E402
 )
-from bench.config import Config, EndpointConfig  # noqa: E402
+from bench.config import Config, ConfigError, EndpointConfig  # noqa: E402
 from bench.probe import ModelIdentity  # noqa: E402
 from bench.registry import (  # noqa: E402
     KNOWN_PLACEHOLDERS,
@@ -558,6 +558,124 @@ with tempfile.TemporaryDirectory() as _tmp:
     )
     check("save(load(catalog)) rewrites nothing", _drift, "")
 
+
+
+# ---------------------------------------------------------------------------
+# Run naming, and the benchmark segment it gained
+#
+# A run directory is the only place the dataset and the scope are visible
+# without opening a manifest. Until multi-benchmark support they were not in it
+# at all, so two runs of the same harness and model on different benchmarks were
+# indistinguishable in a directory listing.
+# ---------------------------------------------------------------------------
+
+print("\n-- run naming --")
+
+from bench import registry as _reg  # noqa: E402
+from bench.runner import job_name, scope_name  # noqa: E402
+
+_catalog = _reg.load()
+_model = ModelIdentity(
+    served_id="a-model",
+    fingerprint="a1b2c3d4e5f6",
+    label="Qwen3 Coder 30B (Q4_K_M)",
+    base_url="http://example.invalid:8002/v1",
+    host="example.invalid",
+    n_ctx=131072,
+)
+
+check("catalogued slugs are used verbatim",
+      _reg.dataset_slug("aider/aider-polyglot", _catalog), "polyglot")
+check("  including the versioned id",
+      _reg.dataset_slug("terminal-bench@2.0", _catalog), "tb2")
+# An uncatalogued dataset still has to name itself: --dataset accepts anything
+# Harbor resolves, and refusing to name the directory would be worse than a
+# longer name.
+check("an uncatalogued dataset derives one",
+      _reg.dataset_slug("some-org/brand-new-bench@3.1", _catalog), "brand-new-be")
+check("  and never exceeds the bound",
+      len(_reg.dataset_slug("some-org/brand-new-bench@3.1", _catalog))
+      <= _reg.DATASET_SLUG_MAX, True)
+check("  nor ends on a separator",
+      _reg.derive_dataset_slug("org/aaaaaaaaaaa-bbb").endswith("-"), False)
+
+check("a named subset names itself", scope_name("stratified-25", None, ["a"]),
+      "stratified-25")
+check("an ad-hoc task cap is a smoke run", scope_name(None, 3, None), "smoke")
+check("everything else is the full dataset", scope_name(None, None, None), "full")
+
+_name = job_name(_model_harness := "omp", _model, "20260814T173206Z",
+                 dataset_slug="tb2", scope="full")
+check("the name carries the benchmark", "__tb2__" in _name, True)
+check("  and the scope", "__full__" in _name, True)
+# collect.load_run identifies a job directory with no manifest by splitting on
+# `__` and taking the first field. Inserting the new segments anywhere but after
+# the model would relabel every such run as whatever now sits at index 0.
+check("harness stays at index 0 for the manifest-less fallback",
+      _name.split("__")[0], "omp")
+check("  and the timestamp stays last",
+      _name.split("__")[-1], "20260814T173206Z")
+
+# Windows still enforces MAX_PATH on the trial directories Harbor writes under
+# this one, and the model slug alone can reach 57 characters.
+check("the longest catalogued name stays inside a sane bound",
+      max(
+          len(job_name("dmfa-minion", _model, "20260814T173206Z",
+                       dataset_slug=_reg.dataset_slug(e["id"], _catalog),
+                       scope="stratified-25"))
+          for e in _reg.datasets(_catalog)
+      ) < 120,
+      True)
+
+# Two datasets sharing a slug is the failure the slug exists to prevent: the
+# run directories stop telling them apart, and nothing downstream reports it.
+try:
+    _reg.validate_dataset_slugs(
+        {"datasets": [{"id": "a/one", "slug": "dup"}, {"id": "b/two", "slug": "dup"}]}
+    )
+    check("colliding slugs are refused", "accepted", "refused")
+except RegistryError as exc:
+    check("colliding slugs are refused", "slug" in str(exc), True)
+
+try:
+    _reg.validate_dataset_slugs({"datasets": [{"id": "a/one", "slug": "Way-Too-Long-Here"}]})
+    check("an out-of-bounds slug is refused", "accepted", "refused")
+except RegistryError as exc:
+    check("an out-of-bounds slug is refused", "at most" in str(exc), True)
+
+# The committed catalog has to satisfy its own rule.
+_reg.validate_dataset_slugs(_catalog)
+check("the committed catalog's slugs are valid and unique", True, True)
+
+
+# ---------------------------------------------------------------------------
+# A missing dataset is reported as a missing dataset
+#
+# It used to splice None into the argv and die several frames later inside
+# scrub() with "expected string or bytes-like object", which reads as a bug in
+# credential redaction rather than as a catalog with no defaults.dataset.
+# ---------------------------------------------------------------------------
+
+print("\n-- no dataset --")
+
+_cfg = Config(endpoint=EndpointConfig(base_url="http://example.invalid:8002/v1"))
+for _empty in (None, "", "   "):
+    try:
+        build_command(
+            "omp", _catalog["harnesses"]["omp"], _model, _catalog, _cfg,
+            jobs_dir=Path("runs"), name="j", dataset=_empty,
+            n_concurrent=1, n_attempts=1, n_tasks=None, include_tasks=None,
+            extra_args=None, allow_hosts=False, agent_timeout_multiplier=8.0,
+            n_concurrent_agents=1, env_build_timeout_multiplier=4.0,
+            max_retries=0, retry_include=None,
+        )
+        check(f"{_empty!r} is refused", "accepted", "refused")
+    except ConfigError as exc:
+        check(f"{_empty!r} is refused with a dataset error",
+              "dataset" in str(exc).lower(), True)
+    except TypeError:
+        check(f"{_empty!r} is refused with a dataset error",
+              "TypeError from scrub", "a ConfigError")
 
 print()
 if failures:

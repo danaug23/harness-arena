@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from bench import RUNS_DIR
+from bench import registry as registry_mod
 from bench.activity import find_log, tail
 from bench.config import load, strip_ansi
 from bench.watchdog import health_around
@@ -44,9 +45,10 @@ RERUN_MARKER = "rerun.json"
 def wilson_interval(successes: int, total: int, z: float = 1.96) -> tuple[float, float]:
     """95% Wilson score interval for a binomial proportion.
 
-    Terminal-Bench is 89 tasks. At that size the difference between two bare
-    percentages is routinely inside the noise, so every pass rate this module
-    emits carries an interval and the dashboard draws it.
+    Benchmarks here run from tens of tasks to a few hundred -- Terminal-Bench 2
+    is 89 -- and at those sizes the difference between two bare percentages is
+    routinely inside the noise, so every pass rate this module emits carries an
+    interval and the dashboard draws it.
     """
     if total == 0:
         return (0.0, 0.0)
@@ -721,6 +723,32 @@ def build_index(runs_dir: Path = RUNS_DIR) -> dict[str, Any]:
         if not entry["context_window"] and run.get("context_window"):
             entry["context_window"] = run["context_window"]
 
+    # The benchmarks these runs actually cover, for the same reason `models`
+    # exists: the page has to scope itself to one before any total it shows
+    # means anything, and it cannot offer a choice it does not know about.
+    # Built from the runs rather than from the catalog, because a catalog entry
+    # nobody has run yet would be an empty option, and a run whose dataset was
+    # since removed from the catalog still has to be selectable.
+    try:
+        catalog = registry_mod.load()
+    except Exception:
+        # A malformed or missing catalog costs the labels, not the results.
+        catalog = {}
+    datasets: dict[str, dict[str, Any]] = {}
+    for run in runs:
+        key = run.get("dataset") or ""
+        entry = datasets.get(key)
+        if entry is None:
+            known = registry_mod.dataset_entry(key, catalog) if key else {}
+            entry = datasets[key] = {
+                "id": key or None,
+                "label": known.get("label") or key or "unknown benchmark",
+                "slug": registry_mod.dataset_slug(key, catalog) if key else "",
+                "n_tasks": known.get("tasks"),
+                "runs": [],
+            }
+        entry["runs"].append(run["run_id"])
+
     # Pair every two complete runs that share a model, newest first.
     comparisons = []
     by_model: dict[str, list[dict[str, Any]]] = {}
@@ -737,10 +765,18 @@ def build_index(runs_dir: Path = RUNS_DIR) -> dict[str, Any]:
                 # wall clock finishes strictly more tasks, so the "disagreement
                 # set" would be measuring the budget, not the harness -- and it
                 # would look every bit as authoritative as a real comparison.
+                #
+                # Nor across datasets. Two full runs on different benchmarks
+                # both carry subset=None and is_partial=False, so every other
+                # clause here passes and they pair. Task names rarely collide
+                # across datasets, which makes it worse rather than better: the
+                # comparison renders with an empty shared set and no agreement
+                # figure, looking like two harnesses that agreed on nothing.
                 if (
                     run_a["harness"] != run_b["harness"]
                     and run_a["n_done"]
                     and run_b["n_done"]
+                    and run_a.get("dataset") == run_b.get("dataset")
                     and run_a["is_partial"] == run_b["is_partial"]
                     and run_a["subset"] == run_b["subset"]
                     and run_a["agent_timeout_multiplier"]
@@ -753,11 +789,13 @@ def build_index(runs_dir: Path = RUNS_DIR) -> dict[str, Any]:
         "runs": runs,
         "task_names": task_names,
         "models": list(models.values()),
+        "datasets": list(datasets.values()),
         "comparisons": comparisons,
         "summary": {
             "n_runs": len(runs),
             "n_running": sum(1 for r in runs if r["status"] == "running"),
             "n_models": len(models),
+            "n_datasets": len(datasets),
             "n_harnesses": len({r["harness"] for r in runs}),
         },
     }

@@ -150,11 +150,64 @@ run time with a bare `KeyError`, and bounds every editable default. `save()` kee
 `.bak` generation, since the adapter notes in that file are the accumulated result of
 debugging each upstream's quirks.
 
+`validate_dataset_slugs` runs on every write. A dataset `slug` becomes a segment of every run
+directory name, so two entries sharing one makes the directories stop distinguishing the
+benchmarks — the mislabelling the slug exists to prevent, and nothing downstream would report
+it.
+
+**`catalog_drift()` and why nothing is merged.** In a checkout there is one catalog and this
+is inert. Installed from a wheel, reads fall back to the packaged catalog only until the
+first edit; `save()` then writes a full copy under `.harness-arena/` and `registry_path()`
+prefers it permanently. A later `pip install -U` updates the code and the packaged catalog
+and touches nothing of yours.
+
+That is silent and it is not cosmetic: the catalog carries the harness `version:` pins, so an
+upgrade that re-pins a harness leaves the old build installing under the new release's name —
+the same "two runs measuring different harnesses under one name" failure the pins were added
+to prevent. New `datasets:` entries disappear the same way.
+
+Merging automatically is not available, because a pin you changed deliberately and one you
+simply never received are identical in the file — so a merge either discards your edit or
+keeps a stale harness, and both are silent. Instead `save()` stamps `snapshot_of` with the
+release that wrote the copy (installed only; in a checkout it would be committed churn), and
+`catalog_drift()` diffs yours against the packaged one. `harness-arena doctor` prints the
+result. Recording the fact and refusing to guess is the same rule the pairing logic follows.
+
 ### `bench/runner.py`
 
 Reads `registry.yaml`, substitutes probe values into the harness block, and builds the
 `harbor run` argv. Writes `harness-bench.json` **before** starting, so a job killed early is
 still identifiable.
+
+**Run directory names.**
+
+```
+{harness}__{model_slug}__{dataset_slug}__{scope}__{stamp}
+omp__qwen3-coder-30b-q4-k-m-a1b2c3d4__tb2__full__20260814T173206Z
+hermes__qwen3-coder-30b-q4-k-m-a1b2c3d4__polyglot__stratified-25__20260814T181500Z
+```
+
+The name carries the variables that decide whether two runs are *the same experiment*.
+Model was always there; dataset and scope were not, so a Terminal-Bench 2 run and an
+aider-polyglot run of one harness were indistinguishable in a directory listing. Everything
+else that varies — context window, reasoning effort, timeout multiplier, attempts — stays in
+the manifest: the name is a human index, not the record.
+
+Three constraints shape it, and each rules out an otherwise nicer scheme:
+
+- **Harness stays at index 0.** `collect.load_run` identifies a job directory with *no*
+  manifest — a bare `harbor run`, or one killed before the manifest landed — by splitting on
+  `__` and taking the first field. Putting the dataset first would relabel every such run.
+- **Length.** The model slug alone reaches 57 characters, and Harbor writes trial
+  directories underneath this one against Windows' 260-character path limit. Hence
+  `slug` in the `datasets:` catalog, bounded at 12 characters and checked for collisions
+  on save — a shared slug would make two benchmarks' directories stop telling them apart.
+- **Scope is three states, not two.** A *named* subset is a deliberate experiment every
+  harness ran identically; an ad-hoc `--n-tasks` cap is a smoke test; neither is the full
+  dataset. `scope_name()` and the dashboard's `scopeName()` agree on all three.
+
+A dataset with no catalogued slug derives one from its id rather than refusing: `--dataset`
+accepts anything Harbor resolves, and an unnameable directory is worse than a longer name.
 
 Sets `PYTHONPATH` to the project root so Harbor can import `harnesses.*` in its own process.
 
@@ -179,8 +232,16 @@ Key behaviors:
 - **Stopped runs**: a job killed mid-flight never writes `finished_at`; the manifest's
   `stopped_at` marker turns it into `status: stopped` rather than "running" forever.
 - **Wilson intervals**: every pass rate carries a 95 % score interval.
-- **Pairing**: head-to-head only pairs runs sharing model, subset, partial-status and
-  timeout multiplier, differing in harness.
+- **Pairing**: head-to-head only pairs runs sharing model, **dataset**, subset,
+  partial-status and timeout multiplier, differing in harness. The dataset clause was
+  missing until multi-benchmark support was audited: two *full* runs on different
+  benchmarks both carry `subset: null` and `is_partial: false`, so every other clause
+  passed and they paired. Task names rarely collide across datasets, which made it worse
+  rather than harmless — the comparison rendered with an empty shared set, reading as two
+  harnesses that agreed on nothing.
+- **Benchmarks present**: `datasets` lists the benchmarks the runs actually cover, built
+  from the runs rather than the catalog, so a catalogued benchmark nobody has run is not
+  an empty option and a run whose dataset has since left the catalog is still selectable.
 
 ### `bench/activity.py`
 
@@ -259,6 +320,21 @@ Four gates gate every mutating request:
 | `Host` header validation | DNS rebinding, the attacker controls resolution, not the Host string |
 | `Origin` rejection | Browser-issued cross-origin writes |
 | JSON bodies only | Form encoding, the one content type sendable cross-origin without a preflight |
+
+**A rejected request still has to answer.** Every gate above refuses *before* reading the
+request body, and this speaks HTTP/1.1. Closing a socket with unread request data in it sends
+an RST, so the client sees `WSAECONNABORTED` instead of the 403 or 415 saying what it did
+wrong, and on a kept-alive connection the leftover bytes are parsed as the next request line.
+`_send` therefore drains the body first, and `_read_json` claims `_body_consumed` only once it
+is actually about to read — claiming it up front marked every early rejection as drained and
+reintroduced exactly the failure the drain exists to prevent. An *oversized* body is
+deliberately not drained; reading megabytes only to reject them is the denial of service this
+would invite, so the close is the honest signal there.
+
+That bug is why `tests/test_api.py` asserts a rejected request leaves the connection reusable
+rather than merely returning the right status. Whether a skipped drain aborts depends on how
+much the OS had already buffered, so the status-only form caught it about 1 run in 40 and read
+like an environment fault; reusing the connection fails every time instead.
 
 Redaction is separate from authentication and is not optional: `/api/state` reports *that* a
 key is set, never its value. Exported snapshots are seeded with a read-only flag and no token,

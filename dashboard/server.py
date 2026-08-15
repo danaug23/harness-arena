@@ -670,7 +670,19 @@ def make_handler(app: App) -> type[BaseHTTPRequestHandler]:
             return parsed.hostname in LOOPBACK or parsed.hostname == app.bind_host
 
         def _read_json(self) -> dict[str, Any]:
-            self._body_consumed = True
+            # `_body_consumed` is claimed only once this method is actually
+            # going to read the body. Claiming it up front marked the request
+            # drained on every path that rejects *before* reading -- a wrong
+            # Content-Type above all -- so `_drain_request_body` returned
+            # immediately, the body stayed in the socket, and closing on it
+            # gave the client WSAECONNABORTED instead of the 415 that says what
+            # it did wrong. That is the exact failure the drain exists to
+            # prevent, reintroduced one line above it.
+            #
+            # It surfaced as a ~1-in-40 flake in tests/test_api.py rather than a
+            # reliable one because the rejected bodies there are two bytes and
+            # usually already sitting in the receive buffer; a real client
+            # posting a real body loses the status every time.
             ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip()
             if ctype != "application/json":
                 raise ApiError("Content-Type must be application/json.", 415)
@@ -678,8 +690,11 @@ def make_handler(app: App) -> type[BaseHTTPRequestHandler]:
                 length = int(self.headers.get("Content-Length") or 0)
             except ValueError:
                 raise ApiError("Bad Content-Length.", 400) from None
+            # Left unclaimed on purpose: the drain refuses an oversized body and
+            # closes instead, which is the documented behaviour above.
             if length > MAX_BODY_BYTES:
                 raise ApiError("Request body too large.", 413)
+            self._body_consumed = True
             if length <= 0:
                 return {}
             try:

@@ -22,12 +22,6 @@ from concurrent.futures import ThreadPoolExecutor
 
 from bench import subset_path
 
-# Terminal-Bench 2 publishes one prebuilt image per task under this namespace.
-# Read off the images Harbor itself pulled, e.g. alexgshaw/gpt2-codegolf:20251031.
-DEFAULT_REPO = "alexgshaw"
-DEFAULT_TAG = "20251031"
-
-
 
 def dataset_spec(dataset: str | None) -> dict:
     """The catalog entry for *dataset*, or the default one.
@@ -38,12 +32,7 @@ def dataset_spec(dataset: str | None) -> dict:
     """
     from bench import registry as registry_mod
 
-    catalog = registry_mod.load()
-    wanted = dataset or (catalog.get("defaults") or {}).get("dataset")
-    for entry in catalog.get("datasets") or []:
-        if isinstance(entry, dict) and entry.get("id") == wanted:
-            return entry
-    return {"id": wanted}
+    return registry_mod.dataset_entry(dataset)
 
 
 def images_for(spec: dict, tasks: list[str]) -> tuple[list[tuple[str, str]], str]:

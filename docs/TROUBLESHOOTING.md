@@ -9,6 +9,7 @@ the dangerous kind.
 - [Harness routing](#harness-routing)
 - [Single-trial failures](#single-trial-failures)
 - [Installation failures](#installation-failures)
+- [Benchmarks and the catalog](#benchmarks-and-the-catalog)
 - [Token accounting](#token-accounting)
 - [Timeouts](#timeouts)
 - [Logs and liveness](#logs-and-liveness)
@@ -275,6 +276,89 @@ best-effort, and gate on `command -v curl`, the only hard requirement.
 
 **Fix.** Install from the official `install.sh --binary` release asset, a standalone binary
 with no runtime prerequisites.
+
+---
+
+## Benchmarks and the catalog
+
+### The benchmark dropdown is empty, or missing benchmarks the release notes mention
+
+**Cause.** A PyPI install reads the packaged catalog only until your first edit from
+the dashboard. That edit writes a full copy to `.harness-arena/registry.yaml`, and every
+read prefers that copy from then on. `pip install -U` updates the code and the packaged
+catalog; nothing updates yours.
+
+This is not only cosmetic. The catalog carries the harness `version:` pins, so an upgrade
+that re-pins a harness leaves you installing the **old** build under the new release's
+name — two runs a week apart measuring different harnesses under one label, which is the
+exact failure the pins exist to prevent.
+
+**Diagnosis.** `harness-arena doctor` reports it explicitly, naming which pins and
+benchmarks differ and which release your copy was forked from:
+
+```
+  [ok  ] harness catalog  --  .harness-arena/registry.yaml
+        your own copy, forked from 0.1.14; package is 0.1.16
+  [warn] Your catalog is missing what the installed package ships.
+         harness omp: you pin 'v17.3.1', the package ships 'v18.0.0'
+         benchmarks you do not have: brand-new/bench-9
+```
+
+**Fix.** Nothing is merged for you, because a pin you changed deliberately and one you
+never received are indistinguishable in the file. Either copy the entries you want out of
+the packaged catalog (doctor prints both paths), or delete
+`.harness-arena/registry.yaml` to start over from the packaged one. A clone has a single
+catalog and cannot drift.
+
+### `No dataset to run`
+
+**Cause.** No `--dataset` was passed and the catalog being read has no `defaults.dataset`
+— usually a hand-edited or partial `.harness-arena/registry.yaml`.
+
+**Fix.** Pass `--dataset`, or restore `defaults.dataset` in the catalog doctor names.
+
+Before 0.1.15 this did not report itself: the missing value was spliced into the command
+line as a `None` and died several frames later inside credential scrubbing with
+`TypeError: expected string or bytes-like object`, which reads like a bug in redaction.
+
+### A benchmark id will not resolve
+
+**Cause.** `id:` in the `datasets:` catalog is passed to `harbor run --dataset` verbatim,
+so it has to be a dataset Harbor can resolve. Two forms work and they take different
+resolution paths: a bare name with a version (`terminal-bench@2.0`) resolves against the
+Harbor registry, and `org/name` (`aider/aider-polyglot`) resolves as a package reference.
+
+**Diagnosis.** Resolve every id in the catalog without downloading anything:
+
+```python
+import asyncio
+from bench import registry as R
+from harbor.registry.client.package import PackageDatasetClient
+from harbor.registry.client.factory import RegistryClientFactory
+
+async def main():
+    cat, pkg, reg = R.load(), PackageDatasetClient(), RegistryClientFactory.create()
+    for e in R.datasets(cat):
+        name = e["id"].split("@", 1)[0]
+        client = pkg if "/" in name else reg
+        md = await client.get_dataset_metadata(e["id"] if "/" in name else name)
+        print(f'{e["id"]:<40} {len(md.task_ids)} tasks (catalog says {e.get("tasks")})')
+
+asyncio.run(main())
+```
+
+A mismatch between the resolved count and the catalog's `tasks:` means the dataset moved
+on; `tasks:` is display-only, so it misleads the dropdown rather than breaking a run.
+
+### Two benchmarks share a run-directory name
+
+**Cause.** Two `datasets:` entries with the same `slug:`. The slug is a segment of every
+run directory name, so a collision makes the directories stop telling the benchmarks
+apart.
+
+**Fix.** `save()` refuses this, so it can only arrive by hand-editing. Give each entry a
+distinct `slug` of at most 12 lowercase characters, and re-run
+`harness-arena doctor`.
 
 ---
 
