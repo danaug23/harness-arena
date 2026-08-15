@@ -650,6 +650,10 @@ section.panel {
 
 /* ------------------------------- tables --------------------------------- */
 
+/* The run log's rows scroll inside the panel rather than growing it -- see
+   sizeRunLog. Its own scroller, not the panel body, so the panel's padding and
+   the sticky header stay put while the rows move under them. */
+.log-scroll { overflow-y: auto; overflow-x: auto; }
 table.data { width: 100%; border-collapse: collapse; font-size: 11px; }
 table.data th {
   position: sticky; top: -11px; z-index: 2; background: var(--surface);
@@ -2131,6 +2135,40 @@ function renderCost(runs) {
 
 /* ------------------------------ 6. run log ------------------------------ */
 
+/* How many runs the run log shows before it scrolls.
+
+   Every other panel is bounded by what it draws; this one is a row per run and
+   grows without limit, so after a few sweeps it owned most of the page and
+   pushed the charts off the bottom. Bounded here rather than by a fixed height
+   in CSS because a row carries a variable number of sub-lines -- a run with two
+   error types is half again as tall as a clean one -- so a height in pixels
+   shows four rows on one screen and six on another. */
+const RUN_LOG_ROWS = 5;
+
+/* Cut the run log to exactly RUN_LOG_ROWS, measured after layout.
+
+   Cleared before measuring: this runs on every poll, and measuring a box that
+   is already capped and scrolled would compound the previous answer. The header
+   is sticky inside the scroller, so its height is added rather than counted
+   against the rows.
+
+   Skipped inside the expanded dialog -- expanding a panel is the request to see
+   all of it. */
+function sizeRunLog() {
+  document.querySelectorAll(".log-scroll").forEach((box) => {
+    box.style.maxHeight = "";
+    if (box.closest(".modal-backdrop")) return;
+    const limit = Number(box.getAttribute("data-max-rows")) || RUN_LOG_ROWS;
+    const rows = box.querySelectorAll("tbody tr");
+    if (rows.length <= limit) return;
+    const head = box.querySelector("thead");
+    const headH = head ? head.getBoundingClientRect().height : 0;
+    const first = rows[0].getBoundingClientRect().top;
+    const cut = rows[limit].getBoundingClientRect().top;
+    box.style.maxHeight = `${Math.round(headH + (cut - first))}px`;
+  });
+}
+
 function renderRunLog(data) {
   const all = data.runs || [];
   // Follows the picker: it is the panel you look at to see what you selected,
@@ -2149,6 +2187,7 @@ function renderRunLog(data) {
       null, "log");
   }
   const body = `
+    <div class="log-scroll" data-pane="log-rows" data-max-rows="${RUN_LOG_ROWS}">
     <table class="data">
       <thead><tr>
         <th>started</th><th>harness</th><th>model</th><th class="num">pass</th>
@@ -2188,10 +2227,15 @@ function renderRunLog(data) {
         </tr>`;
       }).join("")}
       </tbody>
-    </table>`;
-  const note = state.runPick === null
+    </table>
+    </div>`;
+  // Says so when there is more below the fold, because a scroller whose
+  // scrollbar is the only hint reads as "these are all the runs".
+  const hidden = runs.length - RUN_LOG_ROWS;
+  const note = (state.runPick === null
     ? "every run on disk, newest first"
-    : `${runs.length} of ${all.length} runs selected`;
+    : `${runs.length} of ${all.length} runs selected`)
+    + (hidden > 0 ? ` &middot; ${hidden} more below` : "");
   return panel("log", "run log", note, body, null, "log");
 }
 
@@ -2445,6 +2489,9 @@ function render() {
     `</div>`;
 
   restorePaneScroll(panes);
+  // After layout, and before mountExpanded clones the panel: the clone drops
+  // the cap itself.
+  sizeRunLog();
 
   const feed = $("#feed-scroll");
   if (feed) {
@@ -2480,6 +2527,9 @@ function mountExpanded() {
   // panel's remembered position with the modal's.
   clone.querySelectorAll("[id]").forEach((el) => el.removeAttribute("id"));
   clone.querySelectorAll("[data-pane]").forEach((el) => el.removeAttribute("data-pane"));
+  // Expanding a panel is the request to see all of it, so the run log's
+  // five-row cap comes off the copy. Inline, because it is set inline.
+  clone.querySelectorAll(".log-scroll").forEach((el) => (el.style.maxHeight = ""));
   clone.removeAttribute("style");
 
   const actions = clone.querySelector(".panel-head > div:last-child");

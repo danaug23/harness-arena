@@ -1512,5 +1512,148 @@ run("maintenance tab (no state)", "renderMaintenance()", 10);
   }
 }
 
+/* ---------------------------------------------------------------------------
+   The run log is bounded.
+
+   Every other panel is bounded by what it draws; the run log is a row per run
+   and grew without limit, so after a few sweeps it owned most of the page and
+   pushed the charts off the bottom. It now shows five and scrolls.
+
+   The cut itself is measured after layout (sizeRunLog), which needs a real box
+   model this harness does not have -- so what is asserted here is everything
+   that does not: the scroller exists, it is the thing that scrolls rather than
+   the panel, its scroll position survives a repaint, and the panel says how
+   many runs are out of sight.
+--------------------------------------------------------------------------- */
+{
+  const cases = [];
+  const inCtx = (expr) => vm.runInContext(expr, ctx);
+  const fp = inCtx("state.model");
+
+  const mk = (n) => ({
+    run_id: `r${n}`, batch_id: "b", harness: "hermes", harness_label: "Hermes Agent",
+    model_fingerprint: fp, model_label: "M", dataset: "terminal-bench@2.0",
+    subset: null, is_partial: false, status: "complete",
+    started_at: `2026-08-1${n % 9}T10:00:00+00:00`,
+    n_done: 1, n_total: 1, n_resolved: 0, pass_rate: 0, tasks: [],
+  });
+
+  const base = inCtx("SEED");
+  const many = { ...base, runs: Array.from({ length: 9 }, (_, i) => mk(i)) };
+  ctx.MANY = many;
+  inCtx("state.data = MANY; state.runPick = null; state.hidden = new Set();"
+        + "state.hidePartial = false; state.dataset = 'terminal-bench@2.0';");
+
+  const log = inCtx("renderRunLog(state.data)");
+  cases.push(["the run log rows get their own scroller",
+    /class="log-scroll"/.test(log)]);
+  cases.push(["...capped at five runs",
+    /data-max-rows="5"/.test(log) && inCtx("RUN_LOG_ROWS") === 5]);
+  // Without this the scroller resets to the top on every 5s poll.
+  cases.push(["...and its scroll position is remembered across repaints",
+    /class="log-scroll" data-pane="log-rows"/.test(log)]);
+  // The table has to be inside the scroller, or the panel grows instead.
+  cases.push(["the table is inside the scroller",
+    log.indexOf('class="log-scroll"') < log.indexOf('<table class="data"')]);
+
+  // A scrollbar is the only other hint that there is more, and on a trackpad
+  // there is not even that.
+  cases.push(["the panel says how many runs are out of sight",
+    /4 more below/.test(log)]);
+
+  const few = { ...base, runs: Array.from({ length: 3 }, (_, i) => mk(i)) };
+  ctx.FEW = few;
+  inCtx("state.data = FEW;");
+  const shortLog = inCtx("renderRunLog(state.data)");
+  cases.push(["...and says nothing when they all fit",
+    !/more below/.test(shortLog)]);
+  cases.push(["...while still using the same scroller",
+    /class="log-scroll"/.test(shortLog)]);
+
+  // Expanding a panel is the request to see all of it.
+  cases.push(["expanding the panel lifts the cap",
+    /log-scroll[\s\S]{0,200}maxHeight = ""/.test(inCtx("mountExpanded.toString()"))]);
+
+  inCtx("state.data = SEED; state.dataset = 'terminal-bench@2.0';");
+
+  for (const [label, ok] of cases) {
+    console.log(`${ok ? "PASS" : "FAIL"}  ${label}`);
+    if (!ok) failed++;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   sizeRunLog cuts at the row, not at a guessed height.
+
+   A run log row is a variable number of lines -- a run with two error types is
+   half again as tall as a clean one -- so a max-height in pixels shows four
+   rows on one screen and six on another. The cut is measured instead. This
+   drives the function against a stub whose rows are deliberately uneven, which
+   checks the arithmetic; the browser is left to do the layout.
+--------------------------------------------------------------------------- */
+{
+  const cases = [];
+
+  // Rows at 10, 50 (tall), 70, 90, 130 (tall), 150, 170 ... header is 20.
+  const tops = [10, 50, 70, 90, 130, 150, 170, 190];
+  const makeBox = (nRows, insideModal) => {
+    const rows = tops.slice(0, nRows).map((t) => ({
+      getBoundingClientRect: () => ({ top: t, height: 0 }),
+    }));
+    return {
+      style: {},
+      _rows: rows,
+      getAttribute: (k) => (k === "data-max-rows" ? "5" : null),
+      closest: (sel) => (insideModal && sel === ".modal-backdrop" ? {} : null),
+      querySelector: (sel) =>
+        sel === "thead" ? { getBoundingClientRect: () => ({ height: 20 }) } : null,
+      querySelectorAll: () => rows,
+    };
+  };
+
+  const withBoxes = (boxes, fn) => {
+    const real = ctx.document.querySelectorAll;
+    ctx.document.querySelectorAll = (sel) =>
+      sel === ".log-scroll" ? boxes : [];
+    try { fn(); } finally { ctx.document.querySelectorAll = real; }
+  };
+
+  // Eight rows, cap of five: cut below the fifth, i.e. at row index 5's top.
+  const box = makeBox(8, false);
+  withBoxes([box], () => vm.runInContext("sizeRunLog()", ctx));
+  // header 20 + (tops[5] - tops[0]) = 20 + (150 - 10) = 160
+  cases.push(["the cut lands under the fifth row, however tall the rows are",
+    box.style.maxHeight === "160px"]);
+
+  // Fewer rows than the cap: no cap at all, so the panel shrinks to fit.
+  const small = makeBox(3, false);
+  withBoxes([small], () => vm.runInContext("sizeRunLog()", ctx));
+  cases.push(["a log that already fits is not capped",
+    small.style.maxHeight === ""]);
+
+  // Exactly the cap is still not capped -- capping there would scroll a list
+  // that fits, which is the thing that reads as broken.
+  const exact = makeBox(5, false);
+  withBoxes([exact], () => vm.runInContext("sizeRunLog()", ctx));
+  cases.push(["exactly five is not capped", exact.style.maxHeight === ""]);
+
+  // The expanded copy shows everything.
+  const modal = makeBox(8, true);
+  withBoxes([modal], () => vm.runInContext("sizeRunLog()", ctx));
+  cases.push(["the expanded copy is never capped", modal.style.maxHeight === ""]);
+
+  // Runs on every poll, so it must not compound its own previous answer.
+  const again = makeBox(8, false);
+  again.style.maxHeight = "999px";
+  withBoxes([again], () => vm.runInContext("sizeRunLog()", ctx));
+  cases.push(["re-measuring does not build on the last answer",
+    again.style.maxHeight === "160px"]);
+
+  for (const [label, ok] of cases) {
+    console.log(`${ok ? "PASS" : "FAIL"}  ${label}`);
+    if (!ok) failed++;
+  }
+}
+
 console.log(failed ? `\n${failed} check(s) failed` : "\nall checks passed");
 process.exit(failed ? 1 : 0);

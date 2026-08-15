@@ -299,6 +299,16 @@ than rendered, and a normal log still costs exactly one small read because the l
 soon as it has something to show. When even the full scan finds nothing, the panel says so:
 silence reads as a hung agent.
 
+**The run log shows five runs and scrolls.** Every other panel is bounded by what it
+draws; the run log is a row per run and grew without limit, so after a few sweeps it owned
+most of the page. The cut is *measured* after layout rather than set as a height in CSS: a
+row carries a variable number of sub-lines — a run with two error types is half again as
+tall as a clean one — so a fixed height shows four rows on one screen and six on another.
+`sizeRunLog` clears its own previous value before measuring, because it runs on every poll
+and would otherwise compound its last answer. The scroller carries its own `data-pane`, so
+the existing scroll-preservation keeps a reader's position across the 5 s repaint, and the
+expanded copy has the cap removed — expanding a panel is the request to see all of it.
+
 **Expanding a panel clones it rather than re-rendering it.** The whole results view is rebuilt
 every five seconds, so the dialog is rebuilt with it, from the freshly rendered panel, which
 means there is no second rendering path to keep in step with the first, and an expanded panel
