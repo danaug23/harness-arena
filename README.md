@@ -45,7 +45,31 @@ that measurement repeatable on your own hardware and puts every run on one page.
   Terminal-Bench tasks and one over 225 polyglot tasks are different denominators,
   so the results view scopes to one model and one benchmark at a time.
 
+  **Your endpoint serves every benchmark**, whether that is llama.cpp, Ollama,
+  vLLM, or anything else OpenAI-compatible. On most of them your model is the
+  agent and nothing else. tau3-bench is the exception: it simulates the *user* in
+  its environment and judges outcomes in its verifier, so your model plays all
+  three parts. That runs, and the catalog wires it up for you — but a tau3 score
+  produced that way is not comparable to a published one, where the user and
+  judge are frontier models. The manifest records which model filled those roles
+  under `dataset_env`.
+
 Orchestration runs on Linux, macOS and Windows; task containers are Linux.
+
+**Windows: turn on long paths before you start.** Windows caps paths at 260
+characters, and Harbor stores a task's files under a directory named for the task
+plus a 64-character hash. Benchmarks with long task names — tau3-bench reaches 287
+— then download an *empty* package and fail much later reading a file that was
+never written. Terminal-Bench 2, SWE-bench and aider-polyglot fit and are
+unaffected. In an admin PowerShell, then reboot:
+
+```powershell
+Set-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' LongPathsEnabled 1
+```
+
+`harness-arena doctor` and the dashboard's **Upkeep → Health check** both report
+this, along with everything else that has to be true before a run works — each
+with the steps that fix it.
 
 ---
 

@@ -11,14 +11,10 @@ from __future__ import annotations
 
 import importlib
 import os
-import shutil
-import subprocess
 import sys
 import textwrap
 from collections.abc import Callable
-from pathlib import Path
 
-from bench import ROOT
 from bench.config import (
     CONFIG_NAME,
     PROVIDERS,
@@ -29,7 +25,6 @@ from bench.config import (
     describe,
     load,
 )
-from bench.dockerenv import daemon_hint, install_hint
 
 #: command -> (module providing main(argv), one-line help)
 COMMANDS: dict[str, tuple[str, str]] = {
@@ -178,33 +173,14 @@ _REASONING_NOTE = {
 def cmd_doctor(argv: list[str]) -> int:
     """Verify the whole chain before someone spends hours discovering it broken.
 
-    Ordered so the cheapest and most commonly wrong things are reported first.
-    Every failure prints the specific next action rather than just a verdict.
+    Every check and every fix lives in `bench.diagnose`, not here, because the
+    dashboard shows the same ones. A fix that only exists in the terminal is a
+    fix nobody running the dashboard will ever see.
     """
+    from bench import diagnose
+
     print("harness-arena doctor\n")
-    failures: list[str] = []
 
-    # --- which code is actually running ---
-    #
-    # First, because everything else is relative to it and because an editable
-    # install pins an absolute path at install time. Run the console script from
-    # a second clone and it still imports the first one -- silently, since `cd`
-    # does not affect import resolution. Every path below then belongs to a
-    # checkout you are not looking at.
-    cwd = Path.cwd().resolve()
-    _check("code root", True, str(ROOT))
-    if cwd != ROOT and (cwd / "bench" / "__init__.py").exists():
-        print(
-            f"  [warn] You are in {cwd}\n"
-            f"         but the running code is {ROOT}.\n"
-            f"         An editable install points at a fixed path, so `cd` does "
-            f"not change it.\n"
-            f"         Fix: reinstall here  ->  python -m pip install -e .\n"
-            f"         Or run this checkout ->  python -m bench <command>"
-        )
-        failures.append("wrong checkout")
-
-    # --- configuration ---
     try:
         config = load()
         path = config_path()
@@ -220,180 +196,40 @@ def cmd_doctor(argv: list[str]) -> int:
         return 1
 
     print()
+    findings = diagnose.run_checks(config)
+    for finding in findings:
+        mark = {"ok": "ok  ", "warn": "warn", "fail": "FAIL"}[finding.severity]
+        print(f"  [{mark}] {finding.title}"
+              + (f"  --  {finding.detail}" if finding.ok and finding.detail else ""))
+        if finding.ok:
+            continue
+        # Wrapped rather than printed raw: these are paragraphs, and a wall of
+        # unwrapped text is skipped rather than read.
+        if finding.detail:
+            print(textwrap.indent(textwrap.fill(finding.detail, 72), "         "))
+        for step in finding.fixes:
+            print(textwrap.indent(textwrap.fill(step, 68), "           ")
+                  .replace("           ", "         - ", 1))
+        if finding.docs:
+            print(f"         see {finding.docs}")
 
-    # --- Harbor ---
-    harbor = shutil.which("harbor")
-    if not _check(
-        "harbor on PATH",
-        bool(harbor),
-        harbor or "pip install harbor==0.20.0, or activate the project env",
-    ):
-        failures.append("harbor")
-    else:
+    # Not a pass/fail, so not a finding: all three answers are legitimate and
+    # what each means for a run is the part worth printing.
+    if any(f.id == "endpoint" and f.ok for f in findings):
         try:
-            result = subprocess.run(
-                [harbor, "--version"],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=60,
-            )
-            _check("harbor runs", result.returncode == 0, result.stdout.strip())
-        except (OSError, subprocess.SubprocessError) as exc:
-            _check("harbor runs", False, str(exc))
-            failures.append("harbor")
+            from bench.probe import supports_reasoning_effort
 
-    # --- Docker ---
-    docker = shutil.which("docker")
-    if not _check("docker on PATH", bool(docker), docker or install_hint()):
-        failures.append("docker")
-    else:
-        try:
-            result = subprocess.run(
-                [docker, "info", "--format", "{{.ServerVersion}}"],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=60,
-            )
-            running = result.returncode == 0
-            if not _check(
-                "docker daemon running",
-                running,
-                result.stdout.strip() or daemon_hint(),
-            ):
-                failures.append("docker daemon")
-        except (OSError, subprocess.SubprocessError) as exc:
-            _check("docker daemon running", False, str(exc))
-            failures.append("docker daemon")
+            accepts = supports_reasoning_effort(config.endpoint)
+            print(f"\n  reasoning    {_REASONING_NOTE[accepts]}")
+        except Exception:  # noqa: BLE001 - an extra note must not fail doctor
+            pass
 
-    # --- harness catalog ---
-    #
-    # An installed copy forks its own catalog on the first edit and reads that
-    # one forever after, so a later `pip install -U` updates the code and the
-    # packaged catalog while yours stays where it was. Silent, and it takes the
-    # harness `version:` pins with it -- an upgraded release installing the old
-    # harness build under the new release's name. Reported here because doctor
-    # is where someone looks when a run is behaving unlike the release notes.
-    try:
-        from bench import registry as registry_mod
-
-        drift = registry_mod.catalog_drift()
-        _check("harness catalog", True, str(registry_mod.registry_path()))
-        if drift["applies"]:
-            origin = drift["snapshot_of"] or "a release before this was recorded"
-            print(
-                f"        your own copy, forked from {origin}; "
-                f"package is {drift['package_version']}"
-            )
-        if drift["stale"]:
-            print(
-                "  [warn] Your catalog is missing what the installed package ships.\n"
-                "         It was copied on your first edit and nothing updates it."
-            )
-            for change in drift["version_changes"]:
-                print(
-                    f"         harness {change['harness']}: you pin "
-                    f"{change['yours']!r}, the package ships "
-                    f"{change['packaged']!r}"
-                )
-            if drift["new_datasets"]:
-                print(f"         benchmarks you do not have: "
-                      f"{', '.join(drift['new_datasets'])}")
-            if drift["new_harnesses"]:
-                print(f"         harnesses you do not have: "
-                      f"{', '.join(drift['new_harnesses'])}")
-            print(
-                f"         Nothing is merged for you: a pin you changed on purpose\n"
-                f"         and one you never received look identical in the file.\n"
-                f"         Fix: edit {drift['user_path']}\n"
-                f"         Or start over from the packaged catalog by deleting it."
-            )
-            failures.append("stale catalog")
-    except Exception as exc:  # noqa: BLE001 - never let a report break doctor
-        _check("harness catalog", False, str(exc))
-
-    # --- Windows path length ---
-    #
-    # Harbor caches a task package under
-    # <cache>/tasks/packages/<org>/<dataset>__<task>/<64-char hash>/..., so the
-    # dataset's own task names decide whether its files fit. tau3-bench has
-    # names up to 118 characters, which puts its deepest file at 287 -- past the
-    # 260 limit. With long paths off the download creates the directories and
-    # writes nothing, and the failure surfaces much later as Harbor reading a
-    # task.toml that was never written. Checked here because nothing in that
-    # chain mentions path length.
-    if sys.platform == "win32":
-        try:
-            import winreg
-
-            with winreg.OpenKey(
-                winreg.HKEY_LOCAL_MACHINE,
-                r"SYSTEM\CurrentControlSet\Control\FileSystem",
-            ) as key:
-                enabled = winreg.QueryValueEx(key, "LongPathsEnabled")[0]
-        except (OSError, ImportError):
-            enabled = 0
-        if not _check(
-            "long paths enabled",
-            bool(enabled),
-            "on" if enabled else "off -- benchmarks with long task names cannot "
-            "fully download",
-        ):
-            print(
-                "         Windows caps paths at 260 characters unless this is on.\n"
-                "         Harbor writes a task's files under a directory named for\n"
-                "         the task plus a 64-character hash, so a dataset with long\n"
-                "         task names (tau3-bench reaches 287) silently downloads an\n"
-                "         empty package and fails later reading task.toml.\n"
-                "         Fix, in an admin PowerShell, then reboot:\n"
-                "           Set-ItemProperty "
-                "'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\FileSystem' "
-                "LongPathsEnabled 1\n"
-                "         Then clear the partial download:  harbor cache clean"
-            )
-            failures.append("long paths")
-
-    # --- disk ---
-    try:
-        runs_dir = config.resolved_runs_dir()
-        anchor = runs_dir if runs_dir.exists() else runs_dir.parent
-        free_gb = shutil.disk_usage(anchor).free / 1e9
-        # Task images alone are ~60GB for the full dataset; run output adds more.
-        _check(
-            "disk space for task images",
-            free_gb >= 100,
-            f"{free_gb:.0f} GB free at {anchor} (~100 GB recommended)",
-        )
-    except OSError as exc:
-        _check("disk space", False, str(exc))
-
-    # --- endpoint ---
+    problems = [f for f in findings if not f.ok]
     print()
-    try:
-        from bench.probe import describe as describe_model
-        from bench.probe import probe, supports_reasoning_effort
-
-        identity = probe(config.endpoint)
-        _check("endpoint answers", True, identity.served_id)
-        print(textwrap.indent(describe_model(identity), "      "))
-        # Worth one extra request here. A server that refuses a reasoning
-        # effort takes down every trial of a Codex run at its first request,
-        # and this is the cheap place to find that out -- not 90 minutes in.
-        accepts = supports_reasoning_effort(
-            config.endpoint, served_id=identity.served_id
-        )
-        print(f"        reasoning    {_REASONING_NOTE[accepts]}")
-    except (ConfigError, RuntimeError) as exc:
-        _check("endpoint answers", False, str(exc))
-        failures.append("endpoint")
-
-    print()
-    if failures:
-        print(f"{len(failures)} problem(s): {', '.join(failures)}")
-        return 1
+    if problems:
+        print(f"{len(problems)} problem(s): "
+              + ", ".join(f.id for f in problems))
+        return 1 if diagnose.worst(findings) == "fail" else 0
     print("All checks passed.  Next:  harness-arena bench --subset stratified-25")
     return 0
 

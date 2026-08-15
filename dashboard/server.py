@@ -60,7 +60,6 @@ from bench.config import (
     config_path,
     load,
 )
-from bench.dockerenv import daemon_hint, install_hint
 from bench.probe import describe as describe_model
 from bench.probe import (
     effective_label,
@@ -376,67 +375,38 @@ class App:
         return result
 
     def doctor(self) -> dict[str, Any]:
-        """The same checks as `harness-arena doctor`, as structured data."""
-        import shutil
-        import subprocess
+        """The same checks as `harness-arena doctor`, as structured data.
 
-        checks: list[dict[str, Any]] = []
+        Rendered from `bench.diagnose` rather than reimplemented here, so a
+        problem is described once and the terminal and the page cannot drift
+        apart. Each finding carries the literal steps that fix it: the page is
+        the only interface most people use, and a fix that only exists in the
+        CLI is one they will never be shown.
+        """
+        from bench import diagnose
 
-        def add(name: str, ok: bool, detail: str = "") -> None:
-            checks.append({"name": name, "ok": bool(ok), "detail": detail})
+        findings = diagnose.run_checks(self.config)
+        return {
+            "checks": [f.to_dict() for f in findings],
+            "worst": diagnose.worst(findings),
+            "ok": all(f.ok for f in findings),
+        }
 
-        harbor = shutil.which("harbor")
-        add("harbor on PATH", bool(harbor), harbor or "pip install -e .")
-        if harbor:
-            try:
-                out = subprocess.run(
-                    [harbor, "--version"],
-                    capture_output=True,
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
-                    timeout=60,
-                )
-                add("harbor runs", out.returncode == 0, out.stdout.strip())
-            except (OSError, subprocess.SubprocessError) as exc:
-                add("harbor runs", False, str(exc))
+    def explain(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Name a failure the caller is looking at, and say what to do about it.
 
-        docker = shutil.which("docker")
-        add("docker on PATH", bool(docker), docker or install_hint())
-        if docker:
-            try:
-                out = subprocess.run(
-                    [docker, "info", "--format", "{{.ServerVersion}}"],
-                    capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60,
-                )
-                add(
-                    "docker daemon running",
-                    out.returncode == 0,
-                    out.stdout.strip() or daemon_hint(),
-                )
-            except (OSError, subprocess.SubprocessError) as exc:
-                add("docker daemon running", False, str(exc))
+        The page holds text the server never saw -- a console tail, a trial's
+        exception -- so the text comes in rather than being read from disk.
+        Bounded, because this is an unauthenticated read and the matcher is
+        linear in the input.
+        """
+        from bench import diagnose
 
-        try:
-            anchor = self.runs_dir if self.runs_dir.exists() else self.runs_dir.parent
-            free_gb = shutil.disk_usage(anchor).free / 1e9
-            add(
-                "disk space for task images",
-                free_gb >= 100,
-                f"{free_gb:.0f} GB free (~100 GB recommended)",
-            )
-        except OSError as exc:
-            add("disk space", False, str(exc))
-
-        try:
-            identity = probe(self.config.endpoint)
-            add("endpoint answers", True, identity.served_id)
-        except (ConfigError, RuntimeError) as exc:
-            add("endpoint answers", False, str(exc))
-
-        return {"checks": checks, "ok": all(c["ok"] for c in checks)}
-
-    # -- runs -------------------------------------------------------------
+        text = payload.get("text")
+        if text is not None and not isinstance(text, str):
+            raise ApiError("`text` must be a string.")
+        finding = diagnose.explain_log((text or "")[:200_000])
+        return {"finding": finding.to_dict() if finding else None}
 
     def start_run(self, payload: dict[str, Any]) -> dict[str, Any]:
         known = set(registry_mod.load().get("harnesses", {}))
@@ -877,6 +847,7 @@ ROUTES: dict[tuple[str, str], Route] = {
             app.supervisor.is_active() or active_run(app.config.resolved_runs_dir())
         ),
     },
+    ("POST", "/api/explain"): lambda app, p, _q: app.explain(p),
     ("POST", "/api/config"): lambda app, p, _q: app.save_config(p),
     ("POST", "/api/config/test"): lambda app, p, _q: app.test_endpoint(p),
     ("POST", "/api/config/models"): lambda app, p, _q: app.available_models(p),

@@ -57,6 +57,9 @@ jobs:
       - name: Local-endpoint routing for the vendor CLIs
         run: python tests/test_local_agents.py
 
+      - name: Diagnostics and failure signatures
+        run: python tests/test_diagnose.py
+
       - name: Dashboard render paths
         run: node tests/test_dashboard.mjs
 

@@ -1018,6 +1018,20 @@ textarea { resize: vertical; min-height: 68px; line-height: 1.45; }
 .note pre { margin: 6px 0 0; font-size: 11px; color: var(--ink-2); white-space: pre-wrap; }
 
 .checklist { list-style: none; margin: 0; padding: 0; }
+.failure-box { margin: 0 0 10px; }
+
+/* A failed check is a paragraph and a list of steps, not a one-line verdict --
+   see renderFinding. Indented under its own mark so the steps read as belonging
+   to that finding rather than to the panel. */
+.checklist li.finding { display: grid; grid-template-columns: auto 1fr; gap: 2px 9px; align-items: start; }
+.checklist li.finding .finding-body { grid-column: 2; }
+.finding-detail { margin: 4px 0 8px; color: var(--ink-dim); line-height: 1.5; max-width: 68ch; }
+.fix-label { font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--ink-muted); margin-bottom: 4px; }
+.fixes { margin: 0 0 6px; padding-left: 20px; line-height: 1.55; max-width: 68ch; }
+.fixes li { margin: 2px 0; }
+.fix-docs { color: var(--ink-muted); font-size: 12px; }
+.mark.warn { color: var(--warning); }
+.checklist li.finding.warn .what { color: var(--warning); }
 .checklist li {
   display: flex; gap: 9px; align-items: baseline;
   padding: 5px 0; border-bottom: 1px solid var(--hairline); font-size: 11.5px;
@@ -2664,6 +2678,11 @@ const cp = {
   probe: null,         // last connection-test result
   models: null,        // {models, default, discoverable} from the endpoint
   doctor: null,
+  // The console's last failure, named. Held rather than recomputed on every
+  // repaint because naming it is a round trip, and the console repaints every
+  // couple of seconds while a run is going.
+  failure: null,
+  failureFrom: "",
   orphans: null,       // GET /api/containers: leftover containers, networks, pool
   editing: null,       // harness id open in the editor, or "+" for a new one
 };
@@ -3287,6 +3306,7 @@ function renderRun() {
   <div class="card">
     <h2>Live output <span class="sub">${cp.log.length} lines</span></h2>
     <div class="card-body">
+      <div id="run-failure">${renderFailure()}</div>
       <div class="console" id="run-console">${renderLogLines()}</div>
     </div>
   </div>`;
@@ -3522,6 +3542,42 @@ function wireRun() {
   }
 }
 
+/* The console's last failure, named, with the steps that fix it.
+
+   A benchmark failure arrives as a stack trace from a subprocess inside a
+   container, and the distance between that text and the one-line fix is where
+   people give up. Every failure this rig has hit is described once in
+   bench/diagnose.py; this shows that description against the console the reader
+   is already looking at, rather than making them recognise it themselves.
+
+   Rendered above the console, not inside it: the console is a tail and scrolls
+   away, and this is the part worth keeping in view. */
+function renderFailure() {
+  if (!cp.failure) return "";
+  return `<ul class="checklist failure-box">${renderFinding(cp.failure)}</ul>`;
+}
+
+/* Ask the server what the console's tail means.
+
+   Keyed on the text so a console that has not changed is not re-sent every
+   poll; the tail is what matters because the fatal error is the last thing
+   written. Silent on failure and silent when nothing matches -- an unrecognised
+   error is left as its own raw text, which the console already shows. */
+async function lookupFailure() {
+  const tail = cp.log.slice(-200).map((l) => (l && l.text) || l || "").join("\n");
+  const key = tail.slice(-4000);
+  if (key === cp.failureFrom) return false;
+  cp.failureFrom = key;
+  const had = cp.failure;
+  try {
+    const res = await api("/api/explain", { method: "POST", body: { text: key } });
+    cp.failure = res.finding || null;
+  } catch (_) {
+    cp.failure = null;
+  }
+  return JSON.stringify(had) !== JSON.stringify(cp.failure);
+}
+
 /* Update the console and status bar without touching form inputs. */
 async function pollRun() {
   if (cp.tab !== "run") return;
@@ -3534,6 +3590,12 @@ async function pollRun() {
     if (box) {
       box.innerHTML = renderLogLines();
       if (cp.logPinned) box.scrollTop = box.scrollHeight;
+    }
+    // Repaints its own box rather than the tab: this sits above a console the
+    // reader may be scrolled into, and a full re-render would lose that.
+    if (await lookupFailure()) {
+      const slot = $("#run-failure");
+      if (slot) slot.innerHTML = renderFailure();
     }
     // A status change alters which buttons exist, so that needs a real render.
     if (was !== JSON.stringify(data.supervisor)) {
@@ -3785,6 +3847,43 @@ function renderOrphans() {
   </div>`;
 }
 
+/* One diagnostic finding, with what to do about it.
+
+   A check that only says "failed" moves the work to the reader, who then has to
+   know the rig well enough to guess -- which is the state this replaced. Every
+   non-ok finding carries `fixes`, which are literal next actions in order, so
+   the panel renders them as steps rather than prose. `detail` says what was
+   observed and why it matters; it is deliberately long, because these failures
+   are ones nobody guesses.
+
+   Severities are three, not two: "warn" means the run will start but the result
+   is harder to trust (a stale catalog, a disabled path limit), and collapsing
+   that into "failed" would either cry wolf or hide it. */
+function renderFinding(c) {
+  const sev = c.severity || (c.ok ? "ok" : "fail");
+  const glyph = { ok: "✓", warn: "!", fail: "✕" }[sev] || "✕";
+  const cls = { ok: "ok", warn: "warn", fail: "no" }[sev] || "no";
+  if (c.ok) {
+    return `<li><span class="mark ok">✓</span>
+      <span class="what">${esc(c.title || c.name || "")}</span>
+      <span class="detail">${esc(c.detail || "")}</span></li>`;
+  }
+  const fixes = (c.fixes || []).length
+    ? `<ol class="fixes">${c.fixes.map((f) => `<li>${esc(f)}</li>`).join("")}</ol>`
+    : "";
+  const docs = c.docs
+    ? `<div class="fix-docs">More: <code>${esc(c.docs)}</code></div>` : "";
+  return `<li class="finding ${cls}">
+    <span class="mark ${cls}">${glyph}</span>
+    <span class="what">${esc(c.title || c.name || "")}</span>
+    <div class="finding-body">
+      ${c.detail ? `<p class="finding-detail">${esc(c.detail)}</p>` : ""}
+      ${fixes ? `<div class="fix-label">To fix</div>${fixes}` : ""}
+      ${docs}
+    </div>
+  </li>`;
+}
+
 function renderMaintenance() {
   const s = cp.server;
   if (!s) return `<div class="empty">Loading&hellip;</div>`;
@@ -3793,12 +3892,10 @@ function renderMaintenance() {
 
   const doctor = cp.doctor ? `
     <ul class="checklist">
-      ${cp.doctor.checks.map((c) => `
-        <li><span class="mark ${c.ok ? "ok" : "no"}">${c.ok ? "✓" : "✕"}</span>
-          <span class="what">${esc(c.name)}</span>
-          <span class="detail">${esc(c.detail)}</span></li>`).join("")}
-    </ul>` : `<p>Checks configuration, Harbor, the Docker daemon, disk headroom and
-       whether the endpoint answers.</p>`;
+      ${cp.doctor.checks.map((c) => renderFinding(c)).join("")}
+    </ul>` : `<p>Checks configuration, Harbor, the Docker daemon, Windows path
+       length, catalog freshness, disk headroom and whether the endpoint
+       answers. Anything wrong is reported with the steps that fix it.</p>`;
 
   return `
   ${noticeHtml("maintenance")}
