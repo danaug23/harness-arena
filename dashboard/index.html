@@ -1672,6 +1672,16 @@ function cellFor(run, task) {
   }
   if (t.error_type) return { ...CELL.error, task: t };
 
+  // The verifier ran and could not turn the work into a number -- on every
+  // benchmark that compiles its tests against the agent's code, that is what
+  // "did not implement it" looks like. A wrong answer, so it wears the failure
+  // dot; the reason travels in the tooltip because "failed" alone would not
+  // explain an empty check list. collect.py clears error_type for these, so
+  // reaching here means it is genuinely a graded failure.
+  if (t.no_reward_reason) {
+    return { ...CELL.fail, task: t, word: "failed — the verifier could not score it" };
+  }
+
   // Scoring is all-or-nothing, so "5/6" and "0/6" both score zero — but one
   // got somewhere and the other did not. Show the ratio in the cell rather
   // than a uniform dot, and tint anything that passed a check at all.
@@ -1801,6 +1811,14 @@ function renderMatrix(data, runs) {
             t ? `<div class="t-r">wall clock <b>${dur(t.duration_s)}</b></div>` : "",
             t && t.n_output_tokens != null ? `<div class="t-r">output tokens <b>${int(t.n_output_tokens)}</b></div>` : "",
             t && t.error_type ? `<div class="t-r">exception <b>${esc(t.error_type)}</b></div>` : "",
+            // Not labelled "exception": it is a scored failure, and the row
+            // exists to explain why a failed cell has no checks to show rather
+            // than to report something going wrong.
+            t && t.no_reward_reason
+              ? `<div class="t-r">no score produced <b>${esc(t.no_reward_reason)}</b>
+                   <div class="mono-dim">the verifier ran; the work could not be
+                   scored, usually because it did not build</div></div>`
+              : "",
           ].join("");
           const mods = `${c.late ? " late" : ""}${c.near ? " near" : ""}`;
           return `<td><div class="cell-wrap"><div class="cell ${c.cls}${mods}" data-tip="${esc(tipHtml)}">${c.glyph}</div></div></td>`;

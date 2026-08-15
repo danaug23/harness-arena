@@ -1312,5 +1312,83 @@ run("maintenance tab (no state)", "renderMaintenance()", 10);
   }
 }
 
+/* ---------------------------------------------------------------------------
+   A submission the verifier could not score is a failure, not an error.
+
+   Benchmarks that compile their tests against the agent's code cannot score
+   code that does not compile, so "did not implement it" arrives as
+   RewardFileNotFoundError. Rendered with the error glyph, the *normal* way to
+   fail on aider-polyglot wore the mark reserved for the harness falling over,
+   and a matrix of red exclamation marks read as infrastructure failure when it
+   meant the model could not code.
+--------------------------------------------------------------------------- */
+{
+  const cases = [];
+  const inCtx = (expr) => vm.runInContext(expr, ctx);
+  const fp = inCtx("state.model");
+
+  const trial = (name, over) => Object.assign({
+    task_name: name, resolved: false, reward: 0, error_type: null,
+    no_reward_reason: null, duration_s: 60, agent_s: 50,
+    started_at: null, finished_at: null,
+    n_input_tokens: 100, n_output_tokens: 50, cost_usd: null,
+  }, over);
+
+  ctx.SCORE = {
+    ...inCtx("SEED"),
+    task_names: ["built-and-passed", "scored-zero", "did-not-build", "crashed"],
+    runs: [{
+      run_id: "h__x__score", batch_id: "bs", harness: "hermes",
+      harness_label: "Hermes Agent", model_fingerprint: fp, model_label: "M",
+      dataset: "terminal-bench@2.0", subset: null, is_partial: false,
+      started_at: "2026-08-10T10:00:00+00:00", status: "complete",
+      n_done: 4, n_total: 4, n_resolved: 1, pass_rate: 0.25,
+      tasks: [
+        trial("built-and-passed", { resolved: true, reward: 1 }),
+        trial("scored-zero", {}),
+        trial("did-not-build", { no_reward_reason: "RewardFileNotFoundError" }),
+        trial("crashed", { error_type: "NonZeroAgentExitCodeError" }),
+      ],
+    }],
+  };
+  inCtx("state.data = SCORE; state.runPick = null; state.hidden = new Set();"
+        + "state.hidePartial = false; state.dataset = 'terminal-bench@2.0';");
+
+  // renderMatrix is what indexes a run's tasks by name, and cellFor reads that
+  // index -- so it has to run first or every cell reports "not run".
+  const mx = inCtx("renderMatrix(state.data, visibleRuns(state.data))");
+  const cellOf = (task) =>
+    inCtx(`cellFor(visibleRuns(state.data)[0], ${JSON.stringify(task)})`);
+
+  const built = cellOf("did-not-build");
+  cases.push(["a submission that could not be scored is a plain failure",
+    built.cls === "fail" && built.glyph === "\u00b7"]);
+  cases.push(["...and says so in words rather than just failing",
+    /could not score/.test(built.word)]);
+  // The distinction only means something if a real crash still stands out.
+  const crashed = cellOf("crashed");
+  cases.push(["a real crash still wears the error glyph",
+    crashed.cls === "error" && crashed.glyph === "!"]);
+  cases.push(["a scored zero is unchanged", cellOf("scored-zero").cls === "fail"]);
+  cases.push(["a pass is unchanged", cellOf("built-and-passed").cls === "pass"]);
+
+  // Rendered output: the reason has to reach the reader, or a failed cell with
+  // no checks explains nothing. The tooltip is escaped into a data-tip
+  // attribute, so its markup arrives as entities -- match on the text.
+  cases.push(["the matrix explains why there is no score",
+    /no score produced/.test(mx) && /RewardFileNotFoundError/.test(mx)]);
+  cases.push(["...and does not call that one an exception",
+    !/exception[^!]{0,20}RewardFileNotFoundError/.test(mx)]);
+  cases.push(["the crash is still labelled an exception",
+    /exception.{0,20}NonZeroAgentExitCodeError/.test(mx)]);
+
+  inCtx("state.data = SEED; state.dataset = 'terminal-bench@2.0';");
+
+  for (const [label, ok] of cases) {
+    console.log(`${ok ? "PASS" : "FAIL"}  ${label}`);
+    if (!ok) failed++;
+  }
+}
+
 console.log(failed ? `\n${failed} check(s) failed` : "\nall checks passed");
 process.exit(failed ? 1 : 0);

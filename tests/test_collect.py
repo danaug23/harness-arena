@@ -482,7 +482,7 @@ def _write_trial(job: Path, task: str, *, resolved: bool, log: str = "",
                  started: str = "2026-08-10T04:00:00Z",
                  finished: str = "2026-08-10T04:03:00Z",
                  agent_s: int = 0, spliced: str = "",
-                 tokens: int | None = None) -> None:
+                 tokens: int | None = None, no_reward: bool = False) -> None:
     trial = job / f"{task}__{suffix}"
     (trial / "agent").mkdir(parents=True)
     if checks:
@@ -502,6 +502,11 @@ def _write_trial(job: Path, task: str, *, resolved: bool, log: str = "",
         "started_at": started,
         "finished_at": finished,
     }
+    # A trial the verifier could not score has no verifier_result at all --
+    # Harbor raises before building one. Passing a reward dict anyway would
+    # test a shape that never reaches disk.
+    if no_reward:
+        result.pop("verifier_result")
     # Harbor writes the block either way; a harness that reported no usage
     # leaves its fields null, which is what a real run looked like.
     result["agent_result"] = {
@@ -524,6 +529,124 @@ def _write_trial(job: Path, task: str, *, resolved: bool, log: str = "",
             "exception_type": exception, "exception_message": message,
         }
     (trial / "result.json").write_text(json.dumps(result), encoding="utf-8")
+
+
+def test_a_submission_the_verifier_could_not_score_is_a_failure(tmp: Path) -> None:
+    """A build failure is a wrong answer, not a broken rig.
+
+    Benchmarks that compile their tests against the agent's code -- every
+    aider-polyglot task in C++, Go, Rust or Java -- cannot score code that does
+    not compile, so Harbor raises RewardFileNotFoundError. That is what "did not
+    implement it" looks like there, which makes it the *normal* failure rather
+    than an exceptional one.
+
+    Classified as an error it wore the glyph reserved for the harness falling
+    over, so a matrix of red exclamation marks read as infrastructure failure
+    when it meant the model could not code. Observed on a live 225-task
+    aider-polyglot run: 2 of the first 5 trials, both C++, both because the test
+    file failed to compile against the agent's missing declarations.
+
+    The exception is only reachable *after* the verifier's tests have run --
+    Verifier.verify executes them, then looks for a reward file -- so it is
+    proof the work was evaluated, on any dataset.
+    """
+    job = tmp / "someharness__m__polyglot__full__20260815T000000Z"
+    job.mkdir(parents=True)
+    (job / "harness-bench.json").write_text(json.dumps({
+        "harness": "someharness", "harness_label": "Some Harness",
+        "dataset": "aider/aider-polyglot",
+        "model": {"label": "M", "fingerprint": "fp1"},
+    }), encoding="utf-8")
+
+    _write_trial(job, "solved", resolved=True)
+    _write_trial(job, "scored-zero", resolved=False)
+    # The agent never defined the symbols the test file needs, so the build
+    # failed and no reward was written.
+    _write_trial(job, "did-not-build", resolved=False, no_reward=True,
+                 exception="RewardFileNotFoundError",
+                 message="No reward file found at .../verifier/reward.txt")
+    # A genuine crash still has to read as one, or the distinction is worthless.
+    _write_trial(job, "harness-crashed", resolved=False,
+                 exception="NonZeroAgentExitCodeError",
+                 log="panic: index out of range\n")
+
+    run = load_run(job)
+    by_task = {t["task_name"]: t for t in run["tasks"]}
+
+    unscorable = by_task["did-not-build"]
+    check("an unscorable submission is not an error",
+          unscorable["error_type"], None)
+    check("...but says why it has no score",
+          unscorable["no_reward_reason"], "RewardFileNotFoundError")
+    check("...and did not pass", unscorable["resolved"], False)
+    # The whole point: it is the harness's failure, so it must stay in the
+    # denominator. Excluding it would quietly inflate the pass rate.
+    check("...and stays the harness's failure", unscorable["fault"], "harness")
+
+    check("a real crash is still an error",
+          by_task["harness-crashed"]["error_type"], "NonZeroAgentExitCodeError")
+    check("...and carries no no-score reason",
+          by_task["harness-crashed"]["no_reward_reason"], None)
+    check("a scored zero has neither",
+          (by_task["scored-zero"]["error_type"],
+           by_task["scored-zero"]["no_reward_reason"]), (None, None))
+
+    check("nothing is dropped from the denominator", run["n_unscored"], 0)
+    check("every trial is still counted", run["n_attempted"], 4)
+    check("the pass rate counts it as a failure",
+          round(run["pass_rate"], 4), round(1 / 4, 4))
+    # Only the genuine crash is an error.
+    check("only the real crash is counted as an error", run["n_errors"], 1)
+    check("...and the tally names only it",
+          run["error_types"], {"NonZeroAgentExitCodeError": 1})
+
+
+def test_a_run_of_only_build_failures_reports_no_errors(tmp: Path) -> None:
+    """The job-level fallback must not undo the distinction.
+
+    `load_run` falls back to Harbor's job-level exception_stats whenever the
+    per-trial pass found no errors -- which is exactly what happens once
+    unscorable submissions stop counting as errors, and Harbor records those at
+    the job level too. Without filtering the fallback there as well, a run of
+    nothing but build failures reports every one of them as a broken trial
+    again, which is the bug this whole distinction exists to remove.
+    """
+    job = tmp / "someharness__m__polyglot__full__20260815T010000Z"
+    job.mkdir(parents=True)
+    (job / "harness-bench.json").write_text(json.dumps({
+        "harness": "someharness", "harness_label": "Some Harness",
+        "dataset": "aider/aider-polyglot",
+        "model": {"label": "M", "fingerprint": "fp1"},
+    }), encoding="utf-8")
+    for task in ("cpp-one", "cpp-two"):
+        _write_trial(job, task, resolved=False, no_reward=True,
+                     exception="RewardFileNotFoundError")
+    # Harbor's own job-level record of the same two trials.
+    (job / "result.json").write_text(json.dumps({
+        "n_total_trials": 2,
+        "stats": {"evals": {"e": {"exception_stats": {
+            "RewardFileNotFoundError": ["cpp-one__x", "cpp-two__x"],
+        }}}},
+    }), encoding="utf-8")
+
+    run = load_run(job)
+    check("a run of build failures reports no errors", run["n_errors"], 0)
+    check("...and an empty error tally", run["error_types"], {})
+    check("...while still scoring zero", run["pass_rate"], 0.0)
+    check("...over every trial", run["n_attempted"], 2)
+
+    # A setup failure has to survive the same filter: it never reached a
+    # verifier, so it can never raise this, and it is the case the fallback
+    # exists for.
+    (job / "result.json").write_text(json.dumps({
+        "n_total_trials": 2,
+        "stats": {"evals": {"e": {"exception_stats": {
+            "RewardFileNotFoundError": ["cpp-one__x"],
+            "AgentSetupError": ["cpp-two__x"],
+        }}}},
+    }), encoding="utf-8")
+    check("a genuine setup failure still surfaces",
+          load_run(job)["error_types"], {"AgentSetupError": 1})
 
 
 def test_partial_credit_excludes_the_tasks_it_solved(tmp: Path) -> None:
@@ -767,6 +890,10 @@ if __name__ == "__main__":
         test_a_grafted_rerun_scores_but_does_not_stretch_the_clock(Path(scratch))
     with tempfile.TemporaryDirectory() as scratch:
         test_endpoint_faults_leave_the_denominator(Path(scratch))
+    with tempfile.TemporaryDirectory() as scratch:
+        test_a_submission_the_verifier_could_not_score_is_a_failure(Path(scratch))
+    with tempfile.TemporaryDirectory() as scratch:
+        test_a_run_of_only_build_failures_reports_no_errors(Path(scratch))
     with tempfile.TemporaryDirectory() as scratch:
         test_partial_credit_excludes_the_tasks_it_solved(Path(scratch))
     with tempfile.TemporaryDirectory() as scratch:

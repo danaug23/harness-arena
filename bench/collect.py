@@ -239,6 +239,33 @@ _API_PATHS = (
 #: The fatal error is the last thing written; the rest is the agent's own work.
 _FAULT_TAIL_LINES = 40
 
+#: Exceptions Harbor can only raise *after* the verifier's tests have already
+#: run. `Verifier.verify` executes the test script, downloads the verifier
+#: directory, and only then looks for reward.json / reward.txt -- so reaching
+#: one of these means the submission *was* evaluated and simply could not be
+#: turned into a number.
+#:
+#: That is a wrong answer, not a broken rig, and the difference is not cosmetic.
+#: On any benchmark that compiles its tests against the agent's code -- every
+#: aider-polyglot task in C++, Go, Rust or Java -- "did not implement it" is a
+#: build failure, so the *normal* way to fail is to produce no reward file. Left
+#: classified as an error, the common case wears the glyph reserved for the
+#: harness falling over, and a matrix of red exclamation marks reads as
+#: infrastructure failure when it means the model cannot code. Terminal-Bench 2
+#: scores a missing implementation as a plain 0 and never raises here, which is
+#: why this only surfaced once a second benchmark existed.
+#:
+#: Matched on the exception type rather than on leftover files: which artifacts
+#: land in the trial directory depends on the environment's mount capabilities
+#: and the task's own log filters, while the exception is Harbor's own statement
+#: about how far it got.
+VERIFIER_RAN_EXCEPTIONS = frozenset({"rewardfilenotfounderror"})
+
+
+def _reached_a_verdict(exception_type: str | None) -> bool:
+    """True when the verifier ran and still produced no score."""
+    return bool(exception_type) and exception_type.lower() in VERIFIER_RAN_EXCEPTIONS
+
 
 def _fault_kind(result: dict[str, Any], trial_dir: Path | None) -> str | None:
     """Whose fault the trial's exception was, or None if it did not raise."""
@@ -276,6 +303,14 @@ def normalize_trial(
     resolved, reward = _is_resolved(result.get("verifier_result"))
     fault = _fault_kind(result, trial_dir)
     exception = result.get("exception_info") or {}
+    exception_type = exception.get("exception_type")
+
+    # A submission the verifier ran and could not score is a failure, not an
+    # error -- see VERIFIER_RAN_EXCEPTIONS. Transport still wins: if the
+    # endpoint died, the trial never got a fair attempt and stays excluded from
+    # the denominator regardless of how far the verifier got afterwards.
+    unscorable = fault != "transport" and _reached_a_verdict(exception_type)
+
     tokens = _token_totals(result)
     checks = read_checks(trial_dir) if trial_dir else []
     n_passed = sum(1 for c in checks if c["status"] == "passed")
@@ -288,9 +323,20 @@ def normalize_trial(
         "trial_name": result.get("trial_name"),
         "resolved": resolved,
         "reward": reward,
-        "error_type": exception.get("exception_type"),
+        # Cleared for a submission the verifier evaluated and could not score:
+        # everything downstream treats error_type as "the trial did not reach a
+        # verdict", and this one did. Keeps it out of n_errors, out of the
+        # error_types tally, and off the error glyph in the matrix -- while
+        # `no_reward_reason` keeps the explanation for the tooltip.
+        "error_type": None if unscorable else exception_type,
+        # Why the verifier produced no number, when it ran and did anyway.
+        # Usually a build failure: the tests are compiled against the agent's
+        # code, so code that does not compile cannot be scored.
+        "no_reward_reason": exception_type if unscorable else None,
         # "transport" | "harness" | None -- see _fault_kind. Only harness faults
-        # are the harness's to answer for.
+        # are the harness's to answer for. Unchanged by the above: an
+        # unscorable submission is still the harness's failure, which is what
+        # keeps it in the denominator rather than quietly discounted.
         "fault": fault,
         # What the watchdog saw around this trial's last moment, when it was
         # running. This is the difference between "the endpoint dropped" as a
@@ -386,6 +432,16 @@ def _job_level_errors(job_result: dict[str, Any] | None) -> dict[str, int]:
     ``stats.evals[<key>].exception_stats`` maps an exception type to the list of
     trial names that raised it. This is the only record of a trial that failed
     before it could write its own result.json.
+
+    Exceptions meaning "the verifier ran and could not score it" are dropped
+    here for the same reason ``normalize_trial`` clears them: they are graded
+    failures, not errors. Without this the caller's fallback undoes the whole
+    distinction -- it fires whenever the per-trial pass found no errors, which
+    is exactly what happens once these stop counting, and Harbor records them at
+    the job level too. A run of nothing but build failures would report every
+    one of them as a broken trial again. Dropping them is also safe for the
+    fallback's actual purpose: a trial that died during *setup* never reached a
+    verifier, so it can never raise one of these.
     """
     if not job_result:
         return {}
@@ -400,6 +456,8 @@ def _job_level_errors(job_result: dict[str, Any] | None) -> dict[str, int]:
         if not isinstance(exception_stats, dict):
             continue
         for name, trials in exception_stats.items():
+            if _reached_a_verdict(name):
+                continue
             counts[name] = counts.get(name, 0) + (
                 len(trials) if isinstance(trials, list) else 1
             )

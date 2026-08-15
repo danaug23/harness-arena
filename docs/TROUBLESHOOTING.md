@@ -321,6 +321,32 @@ Before 0.1.15 this did not report itself: the missing value was spliced into the
 line as a `None` and died several frames later inside credential scrubbing with
 `TypeError: expected string or bytes-like object`, which reads like a bug in redaction.
 
+### `RewardFileNotFoundError`, often on most C++/Go/Rust/Java tasks
+
+**Cause.** Not a fault. The verifier ran, the agent's code did not compile, and a benchmark
+that compiles its tests *against* that code cannot produce a score for it. `Verifier.verify`
+runs the test script and only then looks for `reward.txt` / `reward.json`, so this exception
+is reachable only after the work was evaluated.
+
+On aider-polyglot, SWE-bench and anything else built this way, that is the **normal** way to
+fail: "did not implement it" is a build error, not a failing test. Terminal-Bench 2 scores a
+missing implementation as a plain 0 and never raises it.
+
+**What the rig does.** Since 0.1.17 these are recorded as ordinary failures, not errors:
+still unresolved, still counted in the denominator, shown as `·` with a tooltip reading
+*no score produced*, and kept out of the error tally. Before that they took the `!` glyph,
+so a run against a weak model produced a screen of red that read as broken infrastructure.
+
+**When to worry.** If the verifier output shows the *task's own* files failing to compile
+rather than the agent's, the environment is wrong rather than the answer. Check:
+
+```
+runs/<job>/<trial>/verifier/test-stdout.txt
+```
+
+A trial that genuinely crashed has no `test-stdout.txt` at all — that is the difference
+between "could not be scored" and "never got that far".
+
 ### A benchmark id will not resolve
 
 **Cause.** `id:` in the `datasets:` catalog is passed to `harbor run --dataset` verbatim,

@@ -1162,6 +1162,16 @@ task matrix, which leaves just the tasks the harnesses did not agree on.
 says something about plumbing, not reasoning. Those get their own `!` cell and
 are broken out in the run log.
 
+**But a submission that would not build is a wrong answer.** On benchmarks that
+compile their tests against the agent's code — every aider-polyglot task in C++,
+Go, Rust or Java — code that does not compile cannot be scored, so Harbor raises
+`RewardFileNotFoundError`. That is the *normal* way to fail there, not a
+plumbing problem, so it renders as an ordinary failure `·` and the tooltip says
+no score was produced. It stays unresolved and stays in the denominator; it just
+does not wear the mark reserved for the rig falling over. Terminal-Bench 2 scores
+a missing implementation as a plain zero and never raises this, which is why the
+distinction only became necessary once a second benchmark existed.
+
 **Timeouts are not wrong answers either.** A `T` cell means the agent was still
 working when the budget expired. That is a statement about your hardware and the
 multiplier, not the harness's ability.
@@ -1210,7 +1220,7 @@ A single-screen grid; panels scroll internally rather than the page. Below
 |---|---|
 | **Live feed** | Tail of the running trial's agent output, with liveness state |
 | **Pass rate** | Per-harness bars with 95 % Wilson whiskers |
-| **Task matrix** | Task × run grid; `✓` solved, `5/6` checks passed, `T 1/3` out of time with partial credit, `!` errored |
+| **Task matrix** | Task × run grid; `✓` solved, `5/6` checks passed, `T 1/3` out of time with partial credit, `·` failed (including work that would not build), `!` errored |
 | **Cost of a solve** | Median task wall clock vs output tokens per solved task |
 | **Cost of a run** | The same chart over every trial, won or lost. A harness that solves the cheap tasks and loses the expensive ones reads cheap on the first and dear on this one |
 | **Run log** | Every run on disk with its full configuration |

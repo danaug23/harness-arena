@@ -232,6 +232,16 @@ Key behaviors:
 - **Checks**: parses `verifier/ctrf.json` for per-test outcomes, so a 5/6 near miss is
   distinguishable from 0/6 despite scoring identically.
 - **Retries**: deduplicates by task name, keeping the last attempt.
+- **Unscorable submissions**: `RewardFileNotFoundError` means the verifier *ran* and could
+  not turn the work into a number, because `Verifier.verify` executes the tests and only
+  then looks for a reward file. On any benchmark that compiles its tests against the
+  agent's code — every aider-polyglot task in C++, Go, Rust or Java — that is what "did not
+  implement it" looks like, so it is the **normal** way to fail there, not an exceptional
+  one. It is recorded as a plain failure carrying `no_reward_reason`, not as an error:
+  still unresolved, still in the denominator, but off the error tally and off the matrix's
+  `!` glyph. Left as an error, the common case wore the mark reserved for the harness
+  falling over and a screen of red read as broken infrastructure. The same filter applies
+  to the job-level fallback below, which would otherwise reinstate every one of them.
 - **Setup failures**: a trial that dies before writing its own `result.json` is recovered
   from the job-level `stats.evals[*].exception_stats`, so a failed install shows as a broken
   run rather than an empty one.
