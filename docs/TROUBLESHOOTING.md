@@ -352,12 +352,17 @@ on; `tasks:` is display-only, so it misleads the dropdown rather than breaking a
 
 ### Two benchmarks share a run-directory name
 
-**Cause.** Two `datasets:` entries with the same `slug:`. The slug is a segment of every
-run directory name, so a collision makes the directories stop telling the benchmarks
+**Cause.** Two `datasets:` entries resolving to the same slug. The slug is a segment of
+every run directory name, so a collision makes the directories stop telling the benchmarks
 apart.
 
-**Fix.** `save()` refuses this, so it can only arrive by hand-editing. Give each entry a
-distinct `slug` of at most 12 lowercase characters, and re-run
+It need not be written down to collide. An entry with no `slug:` gets one derived from its
+id by truncating to 12 characters, so two ids sharing a prefix land on the same string —
+`terminal-bench@2.0` and `terminal-bench-pro/terminal-bench-pro` both derive
+`terminal-ben`. That is the form to watch for, because nothing in the file looks wrong.
+
+**Fix.** `save()` refuses both forms, so a collision can only arrive by hand-editing the
+file. Give each entry an explicit `slug` of at most 12 lowercase characters, and re-run
 `harness-arena doctor`.
 
 ---

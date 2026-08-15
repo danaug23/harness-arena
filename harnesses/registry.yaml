@@ -26,7 +26,10 @@
 # directory, so it is bounded at 12 characters: a run directory already carries
 # a harness, a model and a timestamp, and Windows still enforces a 260-character
 # path limit on the trial directories written underneath it. Omitting it derives
-# one from the id, which works but is longer and less recognisable.
+# one from the id, which works but is longer, less recognisable, and a truncation
+# -- two ids sharing their first characters derive the same slug, and a catalog
+# whose run directories would stop telling two benchmarks apart is refused on
+# save whether the collision was written down or derived.
 #
 # The remaining fields are what pre-pull needs, and which one a dataset uses
 # depends on how it ships its environments:

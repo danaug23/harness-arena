@@ -65,7 +65,10 @@ HEADER = """\
 # directory, so it is bounded at 12 characters: a run directory already carries
 # a harness, a model and a timestamp, and Windows still enforces a 260-character
 # path limit on the trial directories written underneath it. Omitting it derives
-# one from the id, which works but is longer and less recognisable.
+# one from the id, which works but is longer, less recognisable, and a truncation
+# -- two ids sharing their first characters derive the same slug, and a catalog
+# whose run directories would stop telling two benchmarks apart is refused on
+# save whether the collision was written down or derived.
 #
 # The remaining fields are what pre-pull needs, and which one a dataset uses
 # depends on how it ships its environments:
@@ -171,19 +174,24 @@ def derive_dataset_slug(dataset: str) -> str:
     return slug[:DATASET_SLUG_MAX].rstrip("-") or "dataset"
 
 
-def dataset_slug(dataset: str | None, data: dict[str, Any] | None = None) -> str:
-    """The run-directory segment naming which benchmark a run measured.
+def slug_of(entry: dict[str, Any]) -> str:
+    """The slug this catalog entry actually contributes to a run directory name.
 
     Catalogued slugs win because they are chosen to be recognisable; a slug that
     would not survive a round trip through a directory name is ignored rather
     than written, since the name is the one place this fact is visible without
-    opening a manifest.
+    opening a manifest. One function so that what `validate_dataset_slugs`
+    checks and what `job_name` writes cannot drift apart.
     """
-    entry = dataset_entry(dataset, data)
     declared = entry.get("slug")
     if isinstance(declared, str) and _DATASET_SLUG.match(declared):
         return declared
-    return derive_dataset_slug(str(entry.get("id") or dataset or ""))
+    return derive_dataset_slug(str(entry.get("id") or ""))
+
+
+def dataset_slug(dataset: str | None, data: dict[str, Any] | None = None) -> str:
+    """The run-directory segment naming which benchmark a run measured."""
+    return slug_of(dataset_entry(dataset, data))
 
 
 def validate_dataset_slugs(data: dict[str, Any]) -> None:
@@ -192,26 +200,45 @@ def validate_dataset_slugs(data: dict[str, Any]) -> None:
     Two datasets sharing a slug is the failure worth catching here: the run
     directories stop distinguishing them, which is exactly the mislabelling the
     slug exists to prevent, and nothing downstream would report it.
+
+    Collisions are checked on the *effective* slug -- what `slug_of` returns --
+    rather than on the declared one. An entry without a `slug:` still gets one,
+    derived by truncating its id, and a truncation collides more readily than a
+    chosen name rather than less: `terminal-bench@2.0` and
+    `terminal-bench-pro/terminal-bench-pro` both derive `terminal-ben`.
+    Checking only what was written down would leave the mislabelling this exists
+    to prevent reachable through the one door nobody is watching.
     """
-    seen: dict[str, str] = {}
+    seen: dict[str, tuple[str, bool]] = {}
     for entry in datasets(data):
         declared = entry.get("slug")
-        if declared is None:
-            continue
-        if not isinstance(declared, str) or not _DATASET_SLUG.match(declared):
+        if declared is not None and (
+            not isinstance(declared, str) or not _DATASET_SLUG.match(declared)
+        ):
             raise RegistryError(
                 f"Dataset {entry.get('id')!r} has slug {declared!r}. Use "
                 f"lowercase letters, digits and '-', starting with a letter or "
                 f"digit, at most {DATASET_SLUG_MAX} characters -- it becomes a "
                 f"segment of every run directory name."
             )
-        if declared in seen:
-            raise RegistryError(
-                f"Datasets {seen[declared]!r} and {entry.get('id')!r} both use "
-                f"slug {declared!r}. Run directories would stop telling them "
-                f"apart."
+        effective = slug_of(entry)
+        if effective in seen:
+            other_id, other_declared = seen[effective]
+            # The fix differs depending on where the slug came from, so say
+            # which: a declared collision is a typo, a derived one is two ids
+            # that happen to share their first characters and needs a `slug:`.
+            remedy = (
+                "Change one of them."
+                if declared is not None and other_declared
+                else "Give at least one an explicit `slug:` -- this one was "
+                     "derived from the id."
             )
-        seen[declared] = str(entry.get("id"))
+            raise RegistryError(
+                f"Datasets {other_id!r} and {entry.get('id')!r} both use slug "
+                f"{effective!r}. Run directories would stop telling them apart. "
+                f"{remedy}"
+            )
+        seen[effective] = (str(entry.get("id")), declared is not None)
 
 
 def save(data: dict[str, Any], path=None) -> None:

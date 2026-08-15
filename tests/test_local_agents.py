@@ -643,6 +643,46 @@ try:
 except RegistryError as exc:
     check("an out-of-bounds slug is refused", "at most" in str(exc), True)
 
+# A slug nobody wrote down is still the slug that lands in the directory name,
+# so the collision check has to see it. Derived slugs are truncations, which
+# collide more readily than chosen names rather than less -- these two ids are
+# from the shipped catalog, and both derive 'terminal-ben'. Validating only the
+# declared ones left the mislabelling reachable through the one entry no one
+# thought to check.
+check("two ids that derive the same slug collide",
+      _reg.derive_dataset_slug("terminal-bench@2.0"),
+      _reg.derive_dataset_slug("terminal-bench-pro/terminal-bench-pro"))
+try:
+    _reg.validate_dataset_slugs(
+        {"datasets": [
+            {"id": "terminal-bench@2.0"},
+            {"id": "terminal-bench-pro/terminal-bench-pro"},
+        ]}
+    )
+    check("...and a catalog relying on them is refused", "accepted", "refused")
+except RegistryError as exc:
+    check("...and a catalog relying on them is refused", "slug" in str(exc), True)
+    # The remedy differs from a declared collision: there is nothing to correct,
+    # something has to be added.
+    check("   naming the fix that applies", "explicit `slug:`" in str(exc), True)
+
+# A declared slug and a derived one landing on the same string is the same
+# failure from the other direction, and the one an added dataset walks into.
+try:
+    _reg.validate_dataset_slugs(
+        {"datasets": [{"id": "someone/polyglot"}, {"id": "y/other", "slug": "polyglot"}]}
+    )
+    check("a declared slug colliding with a derived one is refused",
+          "accepted", "refused")
+except RegistryError as exc:
+    check("a declared slug colliding with a derived one is refused",
+          "slug" in str(exc), True)
+
+# Distinct ids that happen to share no prefix are still fine: the check must not
+# have become a blanket refusal of catalogs without slugs.
+_reg.validate_dataset_slugs({"datasets": [{"id": "a/alpha"}, {"id": "b/beta"}]})
+check("distinct derived slugs are accepted", True, True)
+
 # The committed catalog has to satisfy its own rule.
 _reg.validate_dataset_slugs(_catalog)
 check("the committed catalog's slugs are valid and unique", True, True)

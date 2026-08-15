@@ -12,6 +12,7 @@ validated, or redacted before it would reach either.
     python tests/test_api.py
 """
 
+import hashlib
 import http.client
 import json
 import re
@@ -27,6 +28,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import bench  # noqa: E402
 from bench import REGISTRY_PATH  # noqa: E402
 from bench import registry as registry_mod  # noqa: E402
 from bench.config import REDACTED, Config, EndpointConfig  # noqa: E402
@@ -78,11 +80,29 @@ def main() -> int:
     runs = tmp / "runs"
     runs.mkdir()
 
-    # Work against a copy of the catalog: these tests write to it, and the real
-    # registry.yaml is a source file.
+    # Work against a copy of the catalog: these tests add, edit and delete
+    # harnesses, and the real registry.yaml is a source file.
+    #
+    # Patched at both ends because reads and writes resolve their path
+    # differently. `load()` calls `bench.registry_path()`, which reads the
+    # globals in `bench/__init__.py`; `save()` targets the copy of
+    # USER_REGISTRY_PATH bound into `bench.registry` at import. Setting
+    # `registry_mod.REGISTRY_PATH` -- which is what this used to do -- names an
+    # attribute nothing has read since the packaged/user path split, so the
+    # isolation silently stopped isolating and every run of this suite rewrote
+    # the committed catalog and left a .bak beside it. An isolation that looks
+    # right and does nothing is worse than none, hence the assertion at the end.
     registry_copy = tmp / "registry.yaml"
     shutil.copy2(REGISTRY_PATH, registry_copy)
-    registry_mod.REGISTRY_PATH = registry_copy
+    original_paths = (
+        bench.USER_REGISTRY_PATH,
+        bench.PACKAGED_REGISTRY_PATH,
+        registry_mod.USER_REGISTRY_PATH,
+    )
+    bench.USER_REGISTRY_PATH = registry_copy
+    bench.PACKAGED_REGISTRY_PATH = registry_copy
+    registry_mod.USER_REGISTRY_PATH = registry_copy
+    catalog_before = hashlib.sha256(REGISTRY_PATH.read_bytes()).hexdigest()[:12]
 
     config = Config(
         endpoint=EndpointConfig(base_url="http://127.0.0.1:9/v1"), runs_dir=str(runs)
@@ -455,8 +475,20 @@ def main() -> int:
 
     finally:
         server.shutdown()
-        registry_mod.REGISTRY_PATH = REGISTRY_PATH
+        (
+            bench.USER_REGISTRY_PATH,
+            bench.PACKAGED_REGISTRY_PATH,
+            registry_mod.USER_REGISTRY_PATH,
+        ) = original_paths
         shutil.rmtree(tmp, ignore_errors=True)
+
+    # Byte-for-byte, not "still parses": on Windows a rewrite through save()
+    # returns the same YAML with CRLF endings, which is invisible to a content
+    # check and turns the working tree dirty on every test run.
+    check("the committed catalog is untouched",
+          hashlib.sha256(REGISTRY_PATH.read_bytes()).hexdigest()[:12], catalog_before)
+    check("...and no backup was left beside it",
+          REGISTRY_PATH.with_suffix(".yaml.bak").exists(), False)
 
     print("\n" + ("FAILED: " + ", ".join(failures) if failures else "all checks passed"))
     return 1 if failures else 0

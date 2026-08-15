@@ -320,7 +320,14 @@ def scope_name(
     smoke test that answers "does the adapter work", and neither is the full
     dataset. `collect.py` already refuses to rank them against each other, and
     this puts the same distinction in the name so it survives a directory
-    listing. Matches `scopeName` in the dashboard exactly.
+    listing.
+
+    The dashboard's `scopeName` draws the same three lines and no others, but
+    the strings differ on purpose: it renders a label ("full dataset", the
+    subset name as you typed it) and this is a path segment, so the subset is
+    slugified and "full" is left short. Nothing reads the scope back out of a
+    directory name -- the manifest is the record -- so the two never have to
+    agree character for character, only on where the boundaries fall.
     """
     if subset:
         return re.sub(r"[^a-z0-9]+", "-", subset.lower()).strip("-") or "subset"

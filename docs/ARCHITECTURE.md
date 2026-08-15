@@ -153,7 +153,11 @@ debugging each upstream's quirks.
 `validate_dataset_slugs` runs on every write. A dataset `slug` becomes a segment of every run
 directory name, so two entries sharing one makes the directories stop distinguishing the
 benchmarks — the mislabelling the slug exists to prevent, and nothing downstream would report
-it.
+it. Collisions are checked on the *effective* slug, the one `slug_of` hands to `job_name`, not
+on the declared one: an entry with no `slug:` still gets one by truncating its id, and a
+truncation collides more readily than a chosen name rather than less
+(`terminal-bench@2.0` and `terminal-bench-pro/terminal-bench-pro` both derive `terminal-ben`).
+One function answers both questions so what is validated and what is written cannot drift.
 
 **`catalog_drift()` and why nothing is merged.** In a checkout there is one catalog and this
 is inert. Installed from a wheel, reads fall back to the packaged catalog only until the
@@ -204,7 +208,9 @@ Three constraints shape it, and each rules out an otherwise nicer scheme:
   on save — a shared slug would make two benchmarks' directories stop telling them apart.
 - **Scope is three states, not two.** A *named* subset is a deliberate experiment every
   harness ran identically; an ad-hoc `--n-tasks` cap is a smoke test; neither is the full
-  dataset. `scope_name()` and the dashboard's `scopeName()` agree on all three.
+  dataset. `scope_name()` and the dashboard's `scopeName()` draw the same three lines. The
+  strings differ — the dashboard renders a label, this is a path segment — and nothing reads
+  the scope back out of a directory name, so only the boundaries have to match.
 
 A dataset with no catalogued slug derives one from its id rather than refusing: `--dataset`
 accepts anything Harbor resolves, and an unnameable directory is worse than a longer name.

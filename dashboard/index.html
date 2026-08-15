@@ -1185,8 +1185,10 @@ function datasetKey(run) {
   return run.dataset || "";
 }
 
-/* The benchmarks the selected model has runs for, newest first, labelled from
-   the catalog where collect could resolve one. */
+/* The benchmarks the selected model has runs for, labelled from the catalog
+   where collect could resolve one. Ordered by label rather than by recency:
+   this is a list you find a name in, and an order that reshuffles every time a
+   run lands would move the entry you were reaching for. */
 function datasetsOf(data) {
   const counts = new Map();
   for (const r of runsForModel(data)) {
@@ -1348,7 +1350,12 @@ function renderTiles(data, runs) {
   const best = done.slice().sort((a, b) => b.pass_rate - a.pass_rate)[0];
   const worst = done.slice().sort((a, b) => a.pass_rate - b.pass_rate)[0];
   const spread = best && worst && best !== worst ? best.pass_rate - worst.pass_rate : null;
-  const running = (data.runs || []).filter((r) => r.status === "running").length;
+  // Counted over the runs on screen, not over every run there is. This tile
+  // sits inside a scope -- one model, one benchmark -- so a global count in it
+  // is the same pooling the scope exists to stop: it would report a run in
+  // flight on a benchmark this view is not showing. The header's live
+  // indicator is the unscoped one, and it is on every tab.
+  const running = runs.filter((r) => r.status === "running").length;
   const model = modelsOf(data).find(
     (m) => (m.fingerprint || m.label) === state.model
   );
@@ -1366,7 +1373,9 @@ function renderTiles(data, runs) {
       sub: spread == null ? "needs 2 harnesses" : "best minus worst, same model",
     },
     {
-      k: "runs on this model",
+      // "in view", not "on this model": the value is what the filters left,
+      // inside a scope that is now a model *and* a benchmark.
+      k: "runs in view",
       v: String(runs.length),
       sub: running ? running + " in flight" : "all complete",
     },
