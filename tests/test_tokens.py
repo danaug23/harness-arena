@@ -364,6 +364,259 @@ def test_opencode_config() -> None:
 
 
 
+def test_dsh() -> None:
+    """Tokens come from the JSONL session log, counted once per step.
+
+    dsh prints only its final answer, so the log is the only record there is.
+    Its usage arrives twice for most steps -- once as an `assistant/chunk`
+    usage record and again on the `assistant/message` that commits the step --
+    and upstream defines the message as the *fallback*. Counting both would
+    double every number; counting only the message would lose a step whose
+    stream ended before it committed. Both halves are asserted here.
+    """
+    from harnesses.deepseek import DeepSeekHarness
+
+    def chunk(seq, turn, step, **usage):
+        return {"type": "assistant/chunk", "seq": seq, "time": 1,
+                "data": {"turn": turn, "step": step,
+                         "chunk": {"type": "usage", "usage": usage}}}
+
+    def message(seq, turn, step, usage=None):
+        data = {"turn": turn, "step": step,
+                "message": {"role": "assistant", "content": []}}
+        if usage is not None:
+            data["usage"] = usage
+        return {"type": "assistant/message", "seq": seq, "time": 1, "data": data}
+
+    with tempfile.TemporaryDirectory() as tmp:
+        logs = Path(tmp)
+        # The real layout: <root>/--<normalized cwd>--/<session id>/session.jsonl,
+        # with one file per session -- a subagent gets its own, and its calls
+        # are as real as the parent's.
+        parent = logs / "dsh" / "sessions" / "--app--" / "0001"
+        child = logs / "dsh" / "sessions" / "--app--" / "0002"
+        parent.mkdir(parents=True)
+        child.mkdir(parents=True)
+
+        (parent / "session.jsonl").write_text("\n".join(json.dumps(e) for e in [
+            {"type": "session", "version": 0, "id": "0001", "delegationDepth": 0},
+            {"type": "user/message", "seq": 1, "data": {"turn": 1}},
+            # Step 1: the usual pair. The message repeats the chunk's numbers,
+            # so the step is worth 1000/200/300 exactly once.
+            chunk(2, 1, 1, inputTokens=1000, outputTokens=200,
+                  cacheReadTokens=300, reasoningTokens=50),
+            message(3, 1, 1, {"inputTokens": 1000, "outputTokens": 200,
+                              "cacheReadTokens": 300, "reasoningTokens": 50}),
+            # Step 2: a retried request emits two usage chunks under one step.
+            # Both were paid for, so both count.
+            chunk(4, 1, 2, inputTokens=500, outputTokens=100),
+            chunk(5, 1, 2, inputTokens=700, outputTokens=150),
+            message(6, 1, 2, {"inputTokens": 700, "outputTokens": 150}),
+            # Step 3: no usage chunk. The committed message is the fallback.
+            message(7, 1, 3, {"inputTokens": 900, "outputTokens": 60,
+                              "cacheWriteTokens": 40}),
+            # Records that carry no usage at all.
+            {"type": "tool/result", "seq": 8, "data": {"turn": 1, "step": 3}},
+        ]) + '\n{"type":"assistant/chunk","seq":9,"data":{"tur',  # killed mid-write
+            encoding="utf-8")
+
+        (child / "session.jsonl").write_text("\n".join(json.dumps(e) for e in [
+            {"type": "session", "version": 0, "id": "0002", "delegationDepth": 1},
+            chunk(1, 1, 1, inputTokens=400, outputTokens=25, cacheReadTokens=100),
+        ]), encoding="utf-8")
+
+        agent = DeepSeekHarness(logs, model_name="local/test-model", base_url=ENDPOINT)
+        ctx = AgentContext()
+        agent.populate_context_post_run(ctx)
+
+        # Upstream's counts are disjoint -- inputTokens excludes cache -- and
+        # Harbor's n_input_tokens is the billed total, so the three input
+        # fields are summed: (1000+500+700+900+400) + (300+100) + 40.
+        check("dsh input includes cache", ctx.n_input_tokens, 3940)
+        # reasoningTokens is documented as already inside outputTokens.
+        check("dsh does not double-count reasoning", ctx.n_output_tokens, 535)
+        check("dsh reports cache reads separately", ctx.n_cache_tokens, 400)
+        check("dsh prompt total >= cache",
+              ctx.n_input_tokens >= ctx.n_cache_tokens, True)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        agent = DeepSeekHarness(Path(tmp), model_name="local/m", base_url=ENDPOINT)
+        ctx = AgentContext()
+        agent.populate_context_post_run(ctx)
+        check("dsh no session log -> untouched", ctx.n_output_tokens, None)
+
+
+def test_dsh_config() -> None:
+    """The overlay is the whole configuration, so every row in it is asserted."""
+    import yaml as _yaml
+
+    from harnesses.deepseek import DeepSeekHarness
+
+    with tempfile.TemporaryDirectory() as tmp:
+        agent = DeepSeekHarness(Path(tmp), model_name="local/test-model",
+                                base_url=ENDPOINT, api_key="local",
+                                context_window="262144", max_tokens="32768",
+                                reasoning_effort="high")
+        rows = {row["id"]: row for row in _yaml.safe_load(agent._build_patch_yaml())}
+
+        adapter = rows["llm-deepseek"]["config"]
+        # Used as-is: the adapter appends "/chat/completions". Left unset it
+        # would not merely be wrong, it would send the task to DeepSeek.
+        check("dsh points at the endpoint", adapter["baseURL"], ENDPOINT)
+        # A reference, never a literal: the file this is modelled on is
+        # committed, and the key resolves per request from the environment.
+        check("dsh names the key rather than carrying it",
+              adapter["apiKeyEnv"], "DEEPSEEK_API_KEY")
+        check("dsh has no literal key in its config",
+              "local" in json.dumps(adapter), False)
+        check("dsh declares the context limit",
+              adapter["models"][0]["contextWindow"], 262144)
+        check("dsh replaces the 1M default window",
+              adapter["defaultContextWindow"], 262144)
+        check("dsh declares the output cap", adapter["maxTokens"], 32768)
+
+        # The one-shot runner creates its Agent from this service, so this row
+        # is what actually selects the model.
+        selection = rows["agent-default-model"]["config"]
+        check("dsh selects the endpoint's provider route",
+              selection["provider"], "deepseek-official")
+        check("dsh selects the served model", selection["model"], "test-model")
+
+        # The default is zstd frames holding packed multi-event rows, which
+        # neither the live feed nor the token parser can read.
+        store = rows["session-persistence-jsonl"]["config"]
+        check("dsh writes its session log where Harbor collects it",
+              store["root"], "/logs/agent/dsh/sessions")
+        check("dsh writes plain JSONL", store["compression"], "none")
+        check("dsh writes one event per line", store["packChunks"], False)
+
+        # Model calls that are not the task: a title for a session nobody will
+        # reopen, and a search that would carry task text to DeepSeek.
+        for row in ("session-title-llm", "web", "web-search-deepseek",
+                    "tool-web", "session-telemetry-otel"):
+            check(f"dsh disables {row}", rows[row].get("disabled"), True)
+
+    # dsh publishes three efforts and fails plugin load on anything else,
+    # before any request -- so this rig's Codex vocabulary is mapped rather
+    # than passed through, or every trial dies identically at boot.
+    with tempfile.TemporaryDirectory() as tmp:
+        for given, thinking, effort in (("medium", "enabled", "high"),
+                                        ("max", "enabled", "max"),
+                                        ("none", "disabled", None)):
+            agent = DeepSeekHarness(Path(tmp), model_name="local/m",
+                                    base_url=ENDPOINT, reasoning_effort=given)
+            adapter = _yaml.safe_load(agent._build_patch_yaml())[0]["config"]
+            check(f"dsh maps effort {given!r}", adapter.get("thinking"), thinking)
+            check(f"dsh effort {given!r} -> {effort!r}",
+                  adapter.get("reasoningEffort"), effort)
+
+    # Both halves of unattended, and the one that also decides whether the run
+    # happens at all: dsh-sandbox-local fails closed when no bubblewrap or
+    # Landlock backend is usable, which is the normal state of a task
+    # container, and danger-full-access is the mode that bypasses it.
+    with tempfile.TemporaryDirectory() as tmp:
+        env = DeepSeekHarness(Path(tmp), model_name="local/m",
+                              base_url=ENDPOINT)._agent_env()
+        check("dsh runs unattended and unconfined",
+              env["DSH_PERMISSION_MODE"], "danger-full-access")
+        check("dsh uploads no session telemetry",
+              env["DSH_TELEMETRY_DISABLED"], "1")
+        # Fresh per trial, so nothing baked into a task image can seed the
+        # profile and no skill or setting can survive from one task to the next.
+        check("dsh keeps its home off $HOME", env["DSH_HOME"], "/tmp/dsh-home")
+        # A local server ignores the key, but the adapter refuses a request
+        # with no credential anywhere before it is built.
+        check("dsh always has a credential", env["DEEPSEEK_API_KEY"], "local")
+
+
+#: What holds each harness on the build the catalog pinned, and what stops it
+#: reporting a benchmark run home. `None` records a harness audited and found to
+#: expose no such switch, which is a different claim from one nobody checked.
+#:
+#: Audited 2026-08-17 against each harness's own source and documentation:
+#:
+#:   claude-code  ships a real auto-updater. `DISABLE_AUTOUPDATER`,
+#:                `CLAUDE_CODE_ENABLE_TELEMETRY`, `DISABLE_ERROR_REPORTING` and
+#:                `OTEL_METRICS_EXPORTER` are documented; downloads.claude.ai is
+#:                already in allow_agent_hosts, so an updater left on has a
+#:                route out during a run.
+#:   opencode     `autoupdate` in its config plus OPENCODE_DISABLE_AUTOUPDATE.
+#:   dsh          no self-update surface in its tree; its OTel exporter ships
+#:                pointed at DeepSeek and is patched off.
+#:   omp          release binary, no documented update or telemetry switch.
+#:   hermes,      installed from a git ref, no updater found.
+#:   minion,
+#:   dmfa-minion
+#:   codex        an update_loop lives in its app-server daemon, which is not
+#:                the `codex exec` path Harbor drives. No documented switch.
+#:
+#: A harness missing from this table fails the test rather than passing quietly:
+#: "we never looked" is exactly the state this table exists to make visible.
+_PIN_HOLDS = {
+    "claude-code": ("registry", "DISABLE_AUTOUPDATER", "1"),
+    "opencode": ("config", "autoupdate", False),
+    "dsh": ("env", "DSH_TELEMETRY_DISABLED", "1"),
+    "omp": None,
+    "hermes": None,
+    "minion": None,
+    "dmfa-minion": None,
+    "codex": None,
+}
+
+
+def test_the_pin_is_not_undone_at_runtime() -> None:
+    """A pinned harness that updates itself is not the harness you pinned.
+
+    `version:` exists so two runs a week apart measure one build. An updater
+    turns that into a suggestion, and the failure is invisible: the run
+    completes, the manifest records the pin, and the number came from whatever
+    upstream shipped that morning. That is the hermes incident in the registry
+    header, arriving quietly instead of loudly.
+
+    Telemetry rides along here because it is the same question asked of the
+    same config -- what does this harness do that the benchmark did not ask
+    for -- and because a run's transcript leaving the machine is worth one
+    deliberate decision rather than a default nobody read.
+    """
+    import tempfile as _tempfile
+
+    from bench.runner import load_registry
+
+    registry = load_registry()
+
+    # Every catalogued harness must appear above, with a switch or with the
+    # explicit None that says someone looked and there was none to set.
+    for harness in registry["harnesses"]:
+        check(f"{harness} was audited for self-update", harness in _PIN_HOLDS, True)
+
+    spec = registry["harnesses"]["claude-code"]
+    for key, want in (("DISABLE_AUTOUPDATER", "1"),
+                      ("CLAUDE_CODE_ENABLE_TELEMETRY", "0"),
+                      ("DISABLE_ERROR_REPORTING", "1")):
+        check(f"claude-code sets {key}", (spec.get("agent_env") or {}).get(key), want)
+
+    with _tempfile.TemporaryDirectory() as tmp:
+        from harnesses.deepseek import DeepSeekHarness
+        from harnesses.opencode import OpenCode
+
+        opencode = OpenCode(Path(tmp), model_name="local/m", base_url=ENDPOINT)
+        config = json.loads(opencode._build_config_json())
+        check("opencode does not update mid-experiment", config["autoupdate"], False)
+        check("opencode does not phone its session home", config["share"], "disabled")
+
+        dsh = DeepSeekHarness(Path(tmp), model_name="local/m", base_url=ENDPOINT)
+        # Two independent switches, because the env var alone is a default the
+        # composition could out-rank, and the patched row alone would not
+        # survive a deployment that re-enabled the mode.
+        check("dsh sets the telemetry kill switch",
+              dsh._agent_env()["DSH_TELEMETRY_DISABLED"], "1")
+        import yaml as _yaml
+
+        rows = {row["id"]: row for row in _yaml.safe_load(dsh._build_patch_yaml())}
+        check("dsh also patches the exporter off",
+              rows["session-telemetry-otel"].get("disabled"), True)
+
+
 def test_context_window_reaches_every_harness() -> None:
     """Every harness must be told the same window, in the key it actually reads.
 
@@ -388,6 +641,10 @@ def test_context_window_reaches_every_harness() -> None:
         # punctuation for that reason, not by accident.
         "omp": ["contextWindow: 131072", "maxTokens: 16384"],
         "opencode": ['"context": 131072', '"output": 16384'],
+        # dsh's overlay is YAML, and its own fallback window is 1,000,000 --
+        # so an unset window here would not read as unset, it would read as a
+        # model nobody is running.
+        "dsh": ["contextWindow: 131072", "maxTokens: 16384"],
         # minion reads /props from the server itself, so it is handed no window
         # -- only the output cap, which is not something it can probe.
         "minion": ['"MINION_MAX_TOKENS": "16384"'],
@@ -399,7 +656,8 @@ def test_context_window_reaches_every_harness() -> None:
             accepted = klass.__init__.__code__.co_varnames
             agent = klass(Path(tmp), model_name="local/test-model",
                           **{k: v for k, v in kwargs.items() if k in accepted})
-            for attr in ("_local_config_yaml", "_build_models_yaml", "_build_config_json"):
+            for attr in ("_local_config_yaml", "_build_models_yaml",
+                         "_build_config_json", "_build_patch_yaml"):
                 if hasattr(agent, attr):
                     text = getattr(agent, attr)()
                     break
@@ -423,6 +681,9 @@ if __name__ == "__main__":
     test_configs()
     test_opencode()
     test_opencode_config()
+    test_dsh()
+    test_dsh_config()
+    test_the_pin_is_not_undone_at_runtime()
     test_context_window_reaches_every_harness()
     test_minion()
     test_minion_config()

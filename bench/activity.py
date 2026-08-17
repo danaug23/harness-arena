@@ -77,7 +77,7 @@ def _quiet_seconds(path: Path, size: int) -> float:
 # adapter's filename is covered, which is cheaper than remembering.
 LOG_NAMES = (
     "hermes.txt", "omp.txt", "pi.txt", "opencode.txt", "minion.txt",
-    "claude-code.txt", "codex.txt", "agent.txt",
+    "claude-code.txt", "codex.txt", "dsh.txt", "agent.txt",
 )
 
 
@@ -182,31 +182,46 @@ def tail(path: Path, n_bytes: int = TAIL_BYTES) -> str:
     return text
 
 
-def _content_text(content: Any) -> str:
+#: Content-block types that name a tool call instead of carrying prose. A
+#: message whose content is only tool calls -- which is most of a coding
+#: agent's turns -- has no text at all, and "which tool did it reach for" is
+#: most of what a feed is for.
+_TOOL_CALL_BLOCKS = {"tool_call", "tool_use"}
+
+
+def _content_text(content: Any, depth: int = 0) -> str:
     """Flatten a message content field, which may be a string or block list."""
     if isinstance(content, str):
         return content
-    if isinstance(content, list):
-        parts = []
-        for block in content:
-            if isinstance(block, dict):
-                if isinstance(block.get("text"), str):
-                    parts.append(block["text"])
-                elif block.get("type") == "thinking" and isinstance(
-                    block.get("thinking"), str
-                ):
-                    parts.append(block["thinking"])
-            elif isinstance(block, str):
-                parts.append(block)
-        return "\n".join(parts)
-    return ""
+    if not isinstance(content, list):
+        return ""
+    parts = []
+    for block in content:
+        if isinstance(block, str):
+            parts.append(block)
+            continue
+        if not isinstance(block, dict):
+            continue
+        block_kind = _kind_of(block)
+        if isinstance(block.get("text"), str):
+            parts.append(block["text"])
+        elif block_kind == "thinking" and isinstance(block.get("thinking"), str):
+            parts.append(block["thinking"])
+        elif block_kind in _TOOL_CALL_BLOCKS:
+            parts.append(f"→ {block.get('name') or 'tool'}")
+        elif depth == 0 and isinstance(block.get("content"), list):
+            # A tool-result block carries its own blocks one level further in.
+            nested = _content_text(block["content"], depth + 1)
+            if nested:
+                parts.append(nested)
+    return "\n".join(parts)
 
 
 def _entry_from_event(event: dict[str, Any]) -> dict[str, str] | None:
     """Render one structured agent event (omp/pi NDJSON) as a feed entry."""
-    kind = event.get("type")
-    if kind in ("message_start", "message_update"):
-        return None  # deltas; the authoritative message follows in message_end
+    kind = _kind_of(event)
+    if kind in _SILENT:
+        return None  # deltas; the authoritative message follows them
 
     if kind == "message_end":
         message = event.get("message") or {}
@@ -226,6 +241,35 @@ def _entry_from_event(event: dict[str, Any]) -> dict[str, str] | None:
         if role in ("toolResult", "tool") and text:
             return {"kind": "result", "text": text}
         return None
+
+    # The event-sourced session-log vocabulary: one durable event per message,
+    # namespaced with a slash, the message itself under `data`. dsh writes it,
+    # and so will anything else built on an append-only session log.
+    #
+    # The event type decides what the entry is, never the message's role: a
+    # tool result is stored with the *user* role there, so reading the role
+    # would file every command's output as the prompt.
+    # Keyed on the shape as well as the name: `tool_result` is also what a
+    # flat-event harness calls a bare result with its output at the top level,
+    # and that one belongs to the generic tool path below.
+    data = event.get("data")
+    message = data.get("message") if isinstance(data, dict) else None
+    if kind in ("assistant_message", "tool_result", "user_message") and isinstance(
+        message, dict
+    ):
+        blocks = message.get("content")
+        text = _content_text(blocks)
+        if not text.strip():
+            return None
+        if kind == "tool_result":
+            return {"kind": "result", "text": text}
+        if kind == "user_message":
+            return {"kind": "meta", "text": text}
+        called = any(
+            isinstance(block, dict) and _kind_of(block) in _TOOL_CALL_BLOCKS
+            for block in (blocks if isinstance(blocks, list) else [])
+        )
+        return {"kind": "tool" if called else "assistant", "text": text}
 
     if kind in ("turn_end", "agent_end", "session_start"):
         return {"kind": "meta", "text": str(kind).replace("_", " ")}
@@ -251,7 +295,12 @@ _STRUCTURAL = {
 }
 
 #: Deltas we drop because the authoritative message follows them.
-_SILENT = {"message_start", "message_update"}
+#:
+#: `assistant_chunk` is the event-sourced spelling: a session log records the
+#: raw provider stream chunk by chunk *and* the assembled message that commits
+#: the step, so rendering both would print every sentence twice -- once
+#: reassembled from tokens and once whole.
+_SILENT = {"message_start", "message_update", "assistant_chunk"}
 
 #: Bookkeeping identified by `subtype` rather than by `type`. Claude Code types
 #: every one of these as a plain "system", so the type alone cannot separate a
@@ -277,7 +326,7 @@ _STRUCTURAL_SUBTYPES = {"thinking_tokens"}
 def _subtype_of(event: Any) -> str:
     if not isinstance(event, dict):
         return ""
-    return str(event.get("subtype", "")).replace("-", "_").lower()
+    return str(event.get("subtype", "")).replace("-", "_").replace("/", "_").lower()
 
 #: Wrappers harnesses put the interesting payload inside. opencode nests
 #: everything under "part"; others use "data" or "payload". Without this the
@@ -296,10 +345,17 @@ _TOOL_BODY_CHARS = 1200
 
 
 def _kind_of(event: Any) -> str:
-    """An event's type, normalized across the -/_ spellings harnesses use."""
+    """An event's type, normalized across the spellings harnesses use.
+
+    Three separators mean one thing: `tool_result`, `tool-result` and
+    `tool/result` are the same event under opencode, Anthropic's block types
+    and an event-sourced session log respectively. Folding them here is what
+    lets one vocabulary table cover all three, rather than each new harness
+    adding rows that differ only in punctuation.
+    """
     if not isinstance(event, dict):
         return ""
-    return str(event.get("type", "")).replace("-", "_").lower()
+    return str(event.get("type", "")).replace("-", "_").replace("/", "_").lower()
 
 
 def _plain_text(value: Any) -> str:

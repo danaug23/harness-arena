@@ -36,6 +36,7 @@ COMMANDS: dict[str, tuple[str, str]] = {
     "export": ("dashboard.server", "Write a standalone snapshot HTML"),
     "collect": ("bench.collect", "Print a text summary of all runs"),
     "throughput": ("bench.throughput", "Wall clock and LLM utilization per run"),
+    "clipping": ("bench.clipping", "How often each harness hit the output ceiling"),
     "prepull": ("bench.prepull", "Cache task images ahead of a run"),
     "subset": ("bench.make_subset", "Regenerate a stratified task subset"),
 }

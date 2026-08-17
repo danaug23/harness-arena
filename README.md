@@ -16,12 +16,13 @@ that measurement repeatable on your own hardware and puts every run on one page.
 - **Model**: whatever your endpoint serves. Anything OpenAI-compatible
   (llama-server, vLLM, Ollama, LM Studio, TGI, SGLang) or OpenRouter. Swap the
   weights and re-run; the rig fingerprints them so runs can't be mislabeled.
-- **Harnesses**: seven out of the box:
+- **Harnesses**: eight out of the box:
   [dmfa-minion](https://github.com/danaug23/dmfa-minion),
   [minion](https://github.com/Sentdex/minion),
   [hermes-agent](https://github.com/NousResearch/hermes-agent),
   [oh-my-pi](https://github.com/can1357/oh-my-pi),
   [opencode](https://github.com/anomalyco/opencode),
+  [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness),
   [Claude Code](https://github.com/anthropics/claude-code), and
   [Codex CLI](https://github.com/openai/codex). Adding another is one YAML
   block, plus a Python adapter only when the harness needs one.
@@ -862,6 +863,7 @@ harness-arena dash          Serve the live dashboard
 harness-arena export        Write a standalone snapshot HTML
 harness-arena collect       Print a text summary of all runs
 harness-arena throughput    Wall clock and LLM utilization per run
+harness-arena clipping      How often each harness hit the output ceiling
 harness-arena prepull       Cache task images ahead of a run
 harness-arena subset        Regenerate a stratified task subset
 ```
@@ -986,6 +988,7 @@ Each harness is given it in the key that harness actually reads:
 | hermes | `model.context_length`, `model.max_tokens` | Auto-detects otherwise, and its own example config names a local server with a custom `num_ctx` as a case where that goes wrong |
 | oh-my-pi | `contextWindow`, `maxTokens` | In the generated `models.yml` |
 | opencode | `limit.context`, `limit.output` | In the generated `opencode.json` |
+| DeepSeek Harness | `contextWindow`, `maxTokens` | In the generated `--patch` overlay, per model and again as `defaultContextWindow`. Its own fallback is 1,000,000 tokens, so an unset window does not read as unset — it reads as a model nobody is running |
 | Claude Code | `CLAUDE_CODE_MAX_CONTEXT_TOKENS`, `CLAUDE_CODE_MAX_OUTPUT_TOKENS` | Sizes auto-compaction from a built-in table of model ids. A self-hosted model is not in it, so it assumes 200K and says so, set this or it works to a window the server does not have |
 | Codex | `model_context_window` | Config file only; there is no environment variable for it, which is the entire reason `harnesses/codex.py` exists |
 
@@ -1053,6 +1056,7 @@ mention, found by running the CLI and reading the source:
 | hermes-agent | `model.base_url` plus a local-server `provider`; it discards a non-loopback base URL otherwise, and an empty key aborts before the request is built. |
 | oh-my-pi | Install the release binary; the npm package needs Bun. Every model role must be pinned or a subagent calls a cloud provider. |
 | opencode | `--auto` and `--pure`. Its token stream can end without the final `step_finish`, so the exported session is the fallback. |
+| DeepSeek Harness | A C++ toolchain. It is npm-only and its tree reaches `node-pty`, a native addon with no prebuilt, so the install runs `node-gyp`; Terminal-Bench 2's images have `gcc` but no `python3`, `make` or `g++`, and every trial died in setup. **Two** `--`, not one: its launcher and its one-shot app each parse with commander, the launcher eats the first, and the app then reads a task beginning with `-` as an unknown option. And `DSH_PERMISSION_MODE=danger-full-access`, which is both the approval policy and the only mode that does not need a bubblewrap or Landlock backend the container does not have. |
 | Claude Code | `ANTHROPIC_BASE_URL` must **not** end in `/v1`, the client appends `/v1/messages` itself, and it has to be set on the harbor process, because the built-in agent reads that one straight from `os.environ`. |
 | Codex | `base_url` must **keep** `/v1`: it appends only `/responses`. A custom provider block also fails to load without a `name` field, with `provider name must not be empty`. |
 
@@ -1384,6 +1388,7 @@ harnesses/
   minion.py               minion adapter (named-source config, traffic-log usage)
   omp.py                  oh-my-pi adapter
   opencode.py             opencode adapter
+  deepseek.py             DeepSeek Harness adapter (patch overlay, session log)
   codex.py                Codex CLI adapter (provider block + context window)
                           (Claude Code needs none. It is a registry block and
                            environment variables, nothing more)
@@ -1398,6 +1403,7 @@ bench/
   collect.py              runs/ -> normalized index (pass rate, Wilson CI, head-to-head)
   activity.py             live tail of the in-flight trial
   throughput.py           wall clock and LLM utilization per run
+  clipping.py             per-response output ceiling, per harness, compared
   prepull.py              cache task images ahead of a run
   make_subset.py          regenerate a stratified subset from the dataset repo
   subsets/                named task lists; every harness runs the same one

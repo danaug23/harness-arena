@@ -55,7 +55,7 @@ HEADER = """\
 # 33 after it died. One run, two harnesses, one number.
 #
 # The ref is per-installer: git tag (hermes, omp), commit sha (minion), npm
-# version (claude-code, codex), release version (opencode). Bumping one is
+# version (claude-code, codex, dsh), release version (opencode). Bumping one is
 # deliberate -- re-run that harness before comparing across the change.
 #
 # `datasets:` is the benchmark catalog the dashboard offers in its dropdown.

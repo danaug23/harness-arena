@@ -16,7 +16,7 @@
 # 33 after it died. One run, two harnesses, one number.
 #
 # The ref is per-installer: git tag (hermes, omp), commit sha (minion), npm
-# version (claude-code, codex), release version (opencode). Bumping one is
+# version (claude-code, codex, dsh), release version (opencode). Bumping one is
 # deliberate -- re-run that harness before comparing across the change.
 #
 # `datasets:` is the benchmark catalog the dashboard offers in its dropdown.
@@ -128,6 +128,10 @@ harnesses:
     agent_env:
       ANTHROPIC_API_KEY: '{api_key}'
       CLAUDE_CODE_MAX_CONTEXT_TOKENS: '{n_ctx}'
+      DISABLE_AUTOUPDATER: '1'
+      CLAUDE_CODE_ENABLE_TELEMETRY: '0'
+      DISABLE_ERROR_REPORTING: '1'
+      OTEL_METRICS_EXPORTER: none
   codex:
     label: Codex CLI
     vendor: OpenAI
@@ -141,6 +145,19 @@ harnesses:
       base_url: '{base_url}'
       context_window: '{n_ctx}'
       wire_api: responses
+      reasoning_effort: '{reasoning_effort}'
+  dsh:
+    label: DeepSeek Harness
+    vendor: DeepSeek AI
+    repo: https://github.com/deepseek-ai/deepseek-harness
+    agent: harnesses.deepseek:DeepSeekHarness
+    model_ref: local/{model_id}
+    version: 0.1.0-rc.6
+    agent_kwargs:
+      base_url: '{base_url}'
+      api_key: '{api_key}'
+      context_window: '{n_ctx}'
+      max_tokens: '{max_tokens}'
       reasoning_effort: '{reasoning_effort}'
   opencode:
     label: opencode

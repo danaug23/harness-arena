@@ -95,6 +95,17 @@ Two things reviewers will look for:
   between sessions, task N is solved by an agent shaped by tasks 1..N-1, and the
   run measures accumulated memory instead of the harness. Both existing adapters
   disable it explicitly.
+- **The pin has to hold.** `version:` exists so two runs a week apart measure
+  one build. A harness that updates itself turns that into a suggestion, and it
+  fails silently: the run completes, the manifest records the pin, and the
+  number came from whatever upstream shipped that morning. Find the harness's
+  updater switch and set it. While you are in there, find its telemetry switch
+  too, because it is the same question asked of the same config, and a run's
+  transcript leaving the machine deserves one deliberate decision rather than a
+  default nobody read. Add the harness to `_PIN_HOLDS` in `tests/test_tokens.py`
+  either way, `None` if you looked and there was no switch, since "we never
+  checked" and "there is nothing to check" are different claims and the table
+  is what tells them apart.
 
 ## Reporting results
 

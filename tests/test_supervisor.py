@@ -87,6 +87,44 @@ def test_delete_guards(tmp: Path) -> None:
     check("  and it is gone", (runs / "good").exists(), False)
 
 
+def test_delete_survives_a_long_path(tmp: Path) -> None:
+    """A run is deletable even when a path inside it passes 260 characters.
+
+    Windows refuses a plain path over MAX_PATH unless long paths are enabled
+    machine-wide, and it refuses it as `WinError 3, the system cannot find the
+    path specified` -- which reads as "already deleted", so the user retries
+    and gets the same answer forever while the run sits on disk.
+
+    This is not exotic. A run directory already nests a job name, a trial name
+    and Harbor's per-task directories, and `harness-arena doctor` warns that
+    tau3-bench alone reaches 287 characters. One unreachable file stranded a
+    whole run; the size walk made it worse by reporting the freed bytes of a
+    tree it could not fully see.
+    """
+    runs = tmp / "longruns"
+    runs.mkdir(exist_ok=True)
+
+    # Built in steps: the intermediate `mkdir` calls would hit the same limit
+    # if the whole depth were created in one go from a plain path.
+    job = runs / ("dsh__a-model-fingerprint__tb2__smoke__20260817T035330Z")
+    deep = job / "llm-inference-batching-scheduler__ArkQBVg"
+    for part in (".omc", "state", "sessions", "c02926e0-8424-4043-aafd-2b1ee95c35fc"):
+        deep = deep / part
+    deep.mkdir(parents=True, exist_ok=True)
+    (deep / "pre-tool-advisory-throttle.json").write_text("{}" * 8, encoding="utf-8")
+    (job / "result.json").write_text("x" * 16, encoding="utf-8")
+
+    longest = max(len(str(p)) for p in job.rglob("*"))
+    check("the fixture really is a long path", longest > 200, True)
+
+    result = delete_run(runs, job.name)
+    check("a long path does not strand the run", (runs / job.name).exists(), False)
+    # The walk has to see the same tree the delete does, or the number shown to
+    # the user is the size of the part that happened to be reachable.
+    check("  and its bytes are counted, not skipped",
+          result["freed_bytes"], 32)
+
+
 def test_stop_marks_manifests(tmp: Path) -> None:
     """A stopped job must be recorded as stopped, not left reading as running.
 
@@ -507,6 +545,7 @@ if __name__ == "__main__":
         root = Path(raw)
         test_guards(root)
         test_delete_guards(root)
+        test_delete_survives_a_long_path(root)
         test_stop_marks_manifests(root)
         test_a_running_benchmarks_containers_are_not_orphans(root)
         test_a_cli_run_is_recognised_across_processes(root)

@@ -848,6 +848,32 @@ def reap_containers(names: Iterable[str]) -> dict[str, Any]:
     return {"removed": removed, "failed": failed}
 
 
+def long_path(path: Path) -> str:
+    """A path Windows will still open past 260 characters.
+
+    Windows refuses a plain path longer than MAX_PATH unless long paths are
+    enabled machine-wide, and it refuses it as ``WinError 3, the system cannot
+    find the path specified`` -- which reads as "already gone" rather than as
+    "too long to name", so the caller retries and gets the same answer forever.
+    The ``\\\\?\\`` prefix bypasses the limit and needs no registry change; it
+    requires an absolute path with no forward slashes, which ``resolve()``
+    guarantees.
+
+    This is not hypothetical and not only about deletion: a run directory
+    already nests a job name, a trial name and Harbor's own per-task
+    directories, and `harness-arena doctor` warns that tau3-bench reaches 287
+    characters on its own. Anything writing inside a trial directory can push a
+    path over the line, and one unreachable file is enough to strand the whole
+    run on disk.
+
+    A no-op off Windows, where nothing imposes the limit.
+    """
+    text = str(path)
+    if os.name != "nt" or text.startswith("\\\\?\\"):
+        return text
+    return "\\\\?\\" + text
+
+
 def delete_run(runs_dir: Path, run_id: str) -> dict[str, Any]:
     """Delete one run directory, refusing anything that is not one.
 
@@ -866,6 +892,16 @@ def delete_run(runs_dir: Path, run_id: str) -> dict[str, Any]:
     if target.parent != runs_root or not target.is_dir():
         raise SupervisorError(f"No such run: {run_id!r}")
 
-    size = sum(f.stat().st_size for f in target.rglob("*") if f.is_file())
-    shutil.rmtree(target)
+    # The walk takes the same treatment as the delete. A file too long to name
+    # answers `is_file()` with False rather than raising, so a plain walk does
+    # not fail here -- it quietly under-reports the space about to be freed,
+    # and then rmtree raises on the file the walk pretended was not there.
+    size = 0
+    for dirpath, _dirnames, filenames in os.walk(long_path(target)):
+        for name in filenames:
+            try:
+                size += os.stat(os.path.join(dirpath, name)).st_size
+            except OSError:
+                continue
+    shutil.rmtree(long_path(target))
     return {"deleted": run_id, "freed_bytes": size}

@@ -320,6 +320,44 @@ def test_feed_reassembles_token_streams() -> None:
     check("...and the result it already carries",
           "completed → Wrote file successfully." in entries[0]["text"], True)
 
+    # An event-sourced session log names its events with a slash and nests the
+    # message under `data`. dsh writes one, and it is the only record its run
+    # leaves: `dsh --profile headless` prints nothing until its final answer,
+    # so a feed that cannot read this shape stays blank for the whole trial and
+    # reads as a hung agent.
+    #
+    # The log holds the same turn twice -- the raw provider stream chunk by
+    # chunk, then the assembled message that commits the step -- so the chunks
+    # are dropped the way `message_update` is, or every sentence prints twice.
+    session_log = "\n".join([
+        json.dumps({"type": "assistant/chunk", "seq": 1, "data": {
+            "turn": 1, "step": 1,
+            "chunk": {"type": "text-delta", "delta": "Looking"}}}),
+        json.dumps({"type": "assistant/chunk", "seq": 2, "data": {
+            "turn": 1, "step": 1,
+            "chunk": {"type": "usage", "usage": {"inputTokens": 12}}}}),
+        json.dumps({"type": "assistant/message", "seq": 3, "data": {
+            "turn": 1, "step": 1, "message": {"role": "assistant", "content": [
+                {"type": "text", "text": "Looking at the tests."},
+                {"type": "tool-call", "id": "c1", "name": "bash",
+                 "arguments": '{"command":"pytest -x"}'}]}}}),
+        # Stored with the *user* role, so reading the role rather than the
+        # event type would file every command's output as the prompt.
+        json.dumps({"type": "tool/result", "seq": 4, "data": {
+            "turn": 1, "step": 1, "message": {"role": "user", "content": [
+                {"type": "tool-result", "callId": "c1", "isError": False,
+                 "content": [{"type": "text", "text": "1 failed, 4 passed"}]}]}}}),
+    ])
+    entries = parse_entries(session_log)
+    check("a session log renders its turn",
+          [e["kind"] for e in entries], ["tool", "result"])
+    check("...the message text once, not twice",
+          entries[0]["text"].count("Looking at the tests."), 1)
+    check("...naming the tool it called",
+          "→ bash" in entries[0]["text"], True)
+    check("...and the result nested inside its block",
+          entries[1]["text"], "1 failed, 4 passed")
+
     # Step boundaries bracket every opencode turn and carry nothing to read.
     check("step boundaries render nothing",
           parse_entries(json.dumps({

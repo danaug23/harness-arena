@@ -485,6 +485,82 @@ check("no flag follows the instruction",
 
 
 # ---------------------------------------------------------------------------
+# dsh command
+#
+# Same bug, one layer deeper. dsh puts two commander parsers between the shell
+# and the task -- the launcher's and the one-shot app's -- and the first `--`
+# is consumed by the launcher, so a single one leaves the app reading a task
+# that opens with a bullet as an unknown option and exiting on its usage
+# message. Measured against commander 15 with both parser configurations: one
+# `--` reports "unknown option '- You are given a PyTorch state dictionary'",
+# two deliver the task intact.
+# ---------------------------------------------------------------------------
+
+print("\n-- dsh command --")
+
+from harnesses.deepseek import DeepSeekHarness  # noqa: E402
+
+with tempfile.TemporaryDirectory() as tmp:
+    dsh_cmd = DeepSeekHarness(
+        Path(tmp),
+        model_name="local/a-model",
+        base_url="http://example.invalid:8002/v1",
+        context_window=131072,
+    )._run_command()
+
+check_true("the launcher's dashdash is doubled for the app",
+           '-- -- "$HARBOR_INSTRUCTION"' in dsh_cmd)
+check_true("the overlay is applied", "--patch /tmp/dsh/arena.cordis.yml" in dsh_cmd)
+# dsh prints only its final answer, at the end, and keeps stderr empty on a
+# successful run. Without the mirror the live feed has nothing to tail for the
+# whole trial, and a blank panel reads as a hung agent.
+check_true("the session log is mirrored to the tailable file",
+           "tail -n +1 -F" in dsh_cmd and "/logs/agent/dsh.txt" in dsh_cmd)
+# The mirror must not decide the trial's outcome.
+check_true("the run's own exit status is what propagates",
+           "status=$?" in dsh_cmd and dsh_cmd.rstrip().endswith("exit $status"))
+
+# dsh is the only harness here installed from npm rather than as a standalone
+# release binary, and its tree reaches node-pty -- a native addon with no
+# prebuilt, so `npm install -g` runs node-gyp. Terminal-Bench 2's images carry
+# gcc and neither python3, make nor g++, so the first run of this harness lost
+# every trial in setup to `gyp ERR! not ok` before the agent started. The
+# toolchain is a hard requirement, not the best-effort sharpening that omp and
+# opencode install.
+_packages = DeepSeekHarness._packages_command()
+for _tool in ("python3", "make", "g++"):
+    check_true(f"the install provides {_tool}", f" {_tool}" in _packages)
+# Checked one at a time at the end: a toolchain that could not be installed
+# should say which piece is missing, not surface as npm's gyp output later.
+check_true("a missing build tool is named, not left to npm",
+           "for tool in curl python3 make g++" in _packages)
+
+# dsh exits 1 whenever the final turn/end reason is not `completed`, which
+# folds "the model stopped early" into the same signal as "the harness broke".
+# Harbor reads non-zero as a trial error and skips the verifier, so a run that
+# did the work and had its last message clipped at the output cap is discarded
+# ungraded. Measured on llm-inference-batching-scheduler: `max-tokens` after 13
+# tool calls, workspace never scored.
+#
+# The asymmetry is the point. `error` and `aborted` must keep their non-zero
+# exit: an `error` turn is usually the endpoint failing, and collect.py needs
+# the exception to classify it as a transport fault and drop it from the
+# denominator. Swallowing that would score an outage as a fair attempt.
+for _reason in ("max-tokens", "blocked"):
+    check_true(f"a turn ending {_reason} is graded, not errored",
+               f'"kind":"{_reason}"' in dsh_cmd)
+for _reason in ("error", "aborted"):
+    check(f"a turn ending {_reason} still fails the trial",
+          f'"kind":"{_reason}"' in dsh_cmd, False)
+# Only ever downgrades a failure; a success is never reinterpreted.
+check_true("the salvage is reached only on a non-zero exit",
+           "if [ $status -ne 0 ]; then" in dsh_cmd)
+# The last turn decides: an earlier max-tokens must not mask a later error.
+check_true("the last turn/end is the one consulted",
+           "tail -n 1" in dsh_cmd.split("if [ $status -ne 0 ]")[1])
+
+
+# ---------------------------------------------------------------------------
 # The live feed can only tail a log it knows the name of
 # ---------------------------------------------------------------------------
 
@@ -494,7 +570,8 @@ from bench.activity import LOG_NAMES  # noqa: E402
 
 for _mod, _cls in (("harnesses.hermes", "Hermes"), ("harnesses.omp", "Omp"),
                    ("harnesses.opencode", "OpenCode"), ("harnesses.minion", "Minion"),
-                   ("harnesses.codex", "Codex")):
+                   ("harnesses.codex", "Codex"),
+                   ("harnesses.deepseek", "DeepSeekHarness")):
     _agent = getattr(__import__(_mod, fromlist=[_cls]), _cls)
     _name = getattr(_agent, "_OUTPUT_FILENAME", None)
     if _name:
