@@ -1304,6 +1304,31 @@ function datasetsOf(data) {
   return [...counts.values()].sort((a, b) => a.label.localeCompare(b.label));
 }
 
+/* Harness lists are always alphabetical, wherever they appear.
+
+   registry.yaml is an ordered mapping and every list here used to render it
+   verbatim, so the order was whatever order the rows happened to be written
+   in -- and it drifted further from alphabetical with each edit, because a
+   harness added from the dashboard appends to the end. Sorting the YAML would
+   not hold: save() rewrites it from parsed YAML in insertion order, so the
+   next addition lands at the bottom again. It belongs here.
+
+   Sorted on the label, because that is the text the reader is scanning; the id
+   breaks ties and covers a row that never set one. */
+const byHarnessName = (a, b) =>
+  String(a.label || a.id).localeCompare(String(b.label || b.id)) ||
+  String(a.id).localeCompare(String(b.id));
+
+/* The same order for a plain list of ids, given the catalog to name them. */
+function harnessIdsSorted(harnesses) {
+  return Object.keys(harnesses || {}).sort((x, y) =>
+    byHarnessName(
+      { id: x, label: (harnesses[x] || {}).label },
+      { id: y, label: (harnesses[y] || {}).label },
+    ),
+  );
+}
+
 /* Runs in the current scope: one model AND one benchmark.
    Everything that totals, ranks, charts or compares reads this rather than
    runsForModel. Two benchmarks pooled into one pass rate is an average over
@@ -2310,6 +2335,9 @@ function renderFilters(data, runs) {
       harnesses.push({ id: r.harness, label: r.harness_label });
     }
   });
+  // Discovered in run order, which is the order the sweep happened to run
+  // them in; the reader is looking one up, not replaying the sweep.
+  harnesses.sort(byHarnessName);
 
   const scoped = runsInScope(data);
   const conc = new Set(scoped.map((r) => r.n_concurrent).filter((c) => c != null));
@@ -3160,7 +3188,7 @@ function renderRun() {
   const job = s.supervisor.job;
   const active = s.supervisor.active;
   const d = s.defaults || {};
-  const ids = Object.keys(s.harnesses || {});
+  const ids = harnessIdsSorted(s.harnesses);
 
   const status = job ? job.status : "idle";
   const bar = `
@@ -3660,7 +3688,7 @@ async function pollRun() {
 function renderHarnesses() {
   const s = cp.server;
   if (!s) return `<div class="empty">Loading&hellip;</div>`;
-  const entries = Object.entries(s.harnesses || {});
+  const entries = harnessIdsSorted(s.harnesses).map((id) => [id, s.harnesses[id]]);
   const d = s.defaults || {};
 
   const editor = cp.editing != null ? renderHarnessEditor(s) : "";

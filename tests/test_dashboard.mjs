@@ -1655,5 +1655,62 @@ run("maintenance tab (no state)", "renderMaintenance()", 10);
   }
 }
 
+/* Harness lists are alphabetical wherever they appear.
+ *
+ * registry.yaml is an ordered mapping and these lists used to render it
+ * verbatim, so the order was whatever order the rows were written in -- and it
+ * drifted with every edit, because a harness added from the dashboard appends
+ * to the end. Sorting the YAML would not hold it: save() rewrites from parsed
+ * YAML in insertion order.
+ *
+ * The catalog below is deliberately in registry.yaml's real order, which is not
+ * alphabetical, so a list that forgot to sort fails here rather than looking
+ * plausible.
+ */
+{
+  const cases = [];
+  const catalog = {
+    "dmfa-minion": { label: "dmfa-minion" },
+    hermes: { label: "Hermes Agent" },
+    minion: { label: "minion" },
+    omp: { label: "oh-my-pi" },
+    "claude-code": { label: "Claude Code" },
+    codex: { label: "Codex CLI" },
+    dsh: { label: "DeepSeek Harness" },
+    opencode: { label: "opencode" },
+  };
+  vm.runInContext(`__catalog = ${JSON.stringify(catalog)};`, ctx);
+
+  const ids = vm.runInContext("harnessIdsSorted(__catalog)", ctx);
+  const labels = ids.map((id) => catalog[id].label);
+  const wanted = [...labels].sort((a, b) => a.localeCompare(b));
+  cases.push(["ids sort by the label the reader sees",
+    JSON.stringify(labels) === JSON.stringify(wanted)]);
+  // The catalog handed in was not alphabetical, so an unsorted implementation
+  // would return it unchanged and pass a weaker assertion than this one.
+  cases.push(["  and not in catalog order",
+    JSON.stringify(ids) !== JSON.stringify(Object.keys(catalog))]);
+  cases.push(["  every harness survives the sort", ids.length === 8]);
+
+  // A row with no label falls back to its id rather than sorting as blank.
+  const partial = vm.runInContext(
+    "harnessIdsSorted({ zulu: {}, alpha: { label: 'Alpha' } })", ctx);
+  cases.push(["a label-less row sorts on its id",
+    JSON.stringify(partial) === JSON.stringify(["alpha", "zulu"])]);
+
+  // The filter chips build their list from run order, not the catalog.
+  const chips = vm.runInContext(
+    "[{id:'omp',label:'oh-my-pi'},{id:'dsh',label:'DeepSeek Harness'}," +
+    "{id:'codex',label:'Codex CLI'}].sort(byHarnessName).map(h=>h.label)", ctx);
+  cases.push(["the results filter chips sort too",
+    JSON.stringify(chips) ===
+      JSON.stringify(["Codex CLI", "DeepSeek Harness", "oh-my-pi"])]);
+
+  for (const [label, ok] of cases) {
+    console.log(`${ok ? "PASS" : "FAIL"}  ${label}`);
+    if (!ok) failed++;
+  }
+}
+
 console.log(failed ? `\n${failed} check(s) failed` : "\nall checks passed");
 process.exit(failed ? 1 : 0);
