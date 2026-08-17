@@ -152,6 +152,72 @@ compaction. `OPENAI_BASE_URL` alone leaves it guessing.
 unset resolve against omp's built-in catalog and try to reach a cloud provider you have no
 credentials for, a subagent or plan-mode step would silently fail mid-run.
 
+### claude-code: every trial dies at its first request with `API Error: 500`
+
+`UnknownApiError` on every task, each after ~3 minutes of retries and with no tokens spent.
+The trial's `agent/claude-code.txt` shows only `api_retry ... error_status 500`; the sentence
+that explains it is one directory further down, in
+`agent/sessions/projects/-app/<session>.jsonl`:
+
+```
+API Error: 500
+While executing CallExpression at line 106, column 32 in source:
+...first %}  {{- raise_exception('System message must be at the beginnin...
+Error: Jinja Exception: System message must be at the beginning.
+```
+
+**Cause.** The model's chat template, not the server and not the harness. Claude Code sends
+`messages: [user, system]` — a second, non-first `system`-role message carrying its agent and
+skill listings. llama.cpp's `/v1/messages` bridge passes that role straight to the template,
+and some templates abort rather than render it:
+
+```jinja
+{%- if message.role == "system" %}
+    {%- if not loop.first %}
+        {{- raise_exception('System message must be at the beginning.') }}
+```
+
+This is a property of the **weights**, so it appears the moment you load a different model and
+nothing else changed. Measured: the same llama.cpp build (`b10269`), the same Claude Code
+(`2.1.223`) and the same Harbor (`0.20.0`) ran a full 25-task sweep two days earlier against
+different weights. Only the GGUF changed.
+
+The top-level Anthropic `system` array is **not** what fails — llama.cpp merges its blocks
+into one leading system message, and three blocks are accepted where one trailing system
+*message* is not.
+
+Only Anthropic-shaped harnesses are affected. Everything speaking `/v1/chat/completions` sends
+one leading system message and never reaches that branch; on the run that produced this, six
+of seven harnesses were fine against the very endpoint that could not serve the seventh.
+
+**Fix.**
+
+```
+harness-arena template-fix
+```
+
+It reads the template off `/props`, replaces the `raise_exception` with the system turn the
+template already emits for a leading system message, and writes the patched copy. Restart
+your server with it and confirm:
+
+```
+llama-server ... --chat-template-file qwen3.8-27b.patched.jinja
+harness-arena template-fix --verify
+```
+
+The edit touches only the branch that currently aborts, so every conversation that renders
+today renders byte-identically — verified across seven conversation shapes (with and without
+tools, with tool-call round trips, with content blocks, with and without a leading system
+message).
+
+**Why not rewrite the request instead.** A harness whose traffic the rig rewrites is no longer
+the harness being measured, and a run altered that way is not comparable to one that was not.
+
+**Prevention.** `harness-arena bench` now asks the endpoint whether it accepts the shapes the
+selected harnesses send, before the first container is built, and drops only the harnesses
+whose refusal it recognises — the rest of the sweep runs as asked. `harness-arena doctor` and
+the dashboard's Diagnostics panel report the same check. `--skip-wire-check` turns it off.
+
 ---
 
 ## Single-trial failures

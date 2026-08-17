@@ -46,10 +46,10 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
-from bench import ROOT, subset_datasets, subset_names
+from bench import ROOT, diagnose, subset_datasets, subset_names
 from bench import registry as registry_mod
 from bench.activity import read_activity
-from bench.collect import build_index
+from bench.collect import build_index, salient_error
 from bench.config import (
     PROVIDERS,
     REDACTED,
@@ -59,6 +59,7 @@ from bench.config import (
     EndpointConfig,
     config_path,
     load,
+    strip_ansi,
 )
 from bench.probe import describe as describe_model
 from bench.probe import (
@@ -90,6 +91,13 @@ TOKEN_HEADER = "X-Harness-Arena-Token"
 MAX_BODY_BYTES = 256 * 1024
 
 LOOPBACK = {"127.0.0.1", "localhost", "::1", "[::1]"}
+
+#: How many of a running job's newest trials the failure box looks at. Enough
+#: to catch a failure while it is still the thing on screen, small enough that
+#: polling it every couple of seconds stays free on a 500-task benchmark. Also
+#: the reason a run that starts by failing is caught immediately: the failures
+#: that matter most arrive before there are this many trials at all.
+RECENT_TRIALS_SCANNED = 12
 
 #: Sentinel for "remove this value", on fields where an empty submission means
 #: "leave it as it is". Not a URL and not a key, so it cannot collide with one.
@@ -505,6 +513,56 @@ class App:
         except SupervisorError as exc:
             raise ApiError(str(exc), 409) from exc
 
+    def trial_failure(self) -> dict[str, Any] | None:
+        """The newest failed trial of the running job, named and explained.
+
+        The console cannot answer this on its own. Harbor's stdout reports that
+        a command failed and what it classified the failure as -- it does not
+        quote the agent's error, so the sentence that says *why* only exists in
+        the trial's result.json. A run whose every trial dies at its first
+        request therefore shows a console full of `UnknownApiError` and no
+        cause, which is exactly the case this was built for: the chat template
+        refusing the request was recorded eight times and displayed zero.
+
+        Bounded on purpose. This is polled with the console, every couple of
+        seconds, for as long as a run lasts -- and a healthy run has no failure
+        to find, so an unbounded scan would read every trial's result.json on
+        every poll and get slower the further a 500-task benchmark progressed.
+        Only the newest few trials are examined: the box exists to say what
+        just went wrong, and a failure that has scrolled past that many
+        completions is history the results view already covers.
+        """
+        for job_dir in self.supervisor.job_dirs():
+            try:
+                trials = sorted(
+                    (p for p in job_dir.iterdir() if p.is_dir()),
+                    key=lambda p: p.stat().st_mtime,
+                    reverse=True,
+                )[:RECENT_TRIALS_SCANNED]
+            except OSError:
+                continue
+            for trial_dir in trials:
+                try:
+                    raw = (trial_dir / "result.json").read_text(encoding="utf-8")
+                    result = json.loads(raw)
+                except (OSError, json.JSONDecodeError):
+                    continue
+                if not isinstance(result, dict):
+                    continue
+                exception = result.get("exception_info") or {}
+                message = exception.get("exception_message")
+                if not exception.get("exception_type") or not message:
+                    continue
+                finding = diagnose.explain(strip_ansi(str(message)))
+                return {
+                    "run": job_dir.name,
+                    "trial": result.get("trial_name") or trial_dir.name,
+                    "error_type": exception.get("exception_type"),
+                    "message": salient_error(message),
+                    "finding": finding.to_dict() if finding else None,
+                }
+        return None
+
     def remove_run(self, run_id: str) -> dict[str, Any]:
         active = self.supervisor.status().get("job") or {}
         if active.get("active"):
@@ -828,6 +886,10 @@ ROUTES: dict[tuple[str, str], Route] = {
     ("GET", "/api/run/log"): lambda app, _p, q: {
         "lines": app.supervisor.log(_int_param(q, "limit", 400)),
         "supervisor": app.supervisor.status(),
+        # Served with the console rather than on a route of its own: the page
+        # already polls this, and a failure the console cannot explain is
+        # exactly the moment the reader needs the trial's own error.
+        "trial_failure": app.trial_failure(),
     },
     ("GET", "/api/containers"): lambda app, _p, _q: {
         # Supervisor-aware: the module-level list cannot tell a leftover from a

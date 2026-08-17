@@ -689,6 +689,84 @@ const logHtml = run("console lines", "renderLogLines()", 80);
 }
 vm.runInContext("cp.log = [];", ctx);
 
+// The failure box above the console. Harbor's stdout says a command failed and
+// what it was classified as; it never quotes the agent's error, so a run whose
+// every trial dies at its first request showed an unexplained console. The
+// trial's own result.json is the only place the reason exists, and the page is
+// handed it with the log.
+{
+  const TRIAL = JSON.stringify({
+    run: "claude-code__m__tb2__stratified-25__20260817T145602Z",
+    trial: "write-compressor__7xfeYgt",
+    error_type: "UnknownApiError",
+    message: "Command failed (exit 1): claude --print\n[...]\n"
+      + "Error: Jinja Exception: System message must be at the beginning.",
+    finding: {
+      id: "system-message-position", ok: false, severity: "fail",
+      title: "The model's chat template rejects a system message that is not first",
+      detail: "Claude Code sends its agent and skill listings as a system-role message.",
+      fixes: ["Patch the template: harness-arena template-fix"],
+      docs: "docs/TROUBLESHOOTING.md",
+    },
+  });
+  vm.runInContext(`cp.failure = null; cp.trialFailure = ${TRIAL};`, ctx);
+  const box = vm.runInContext("renderFailure()", ctx);
+  const named = /chat template rejects a system message/.test(box);
+  const fix = /harness-arena template-fix/.test(box);
+  const quoted = /Jinja Exception/.test(box);
+  const trial = /write-compressor/.test(box);
+  const ok = named && fix && quoted && trial;
+  console.log(`${ok ? "PASS" : "FAIL"}  a trial failure is named, quoted and fixable`
+    + ` (named=${named} fix=${fix} quoted=${quoted} trial=${trial})`);
+  if (!ok) failed++;
+
+  // The same finding must not be printed twice when the console already
+  // produced it -- the two sources agree far more often than they disagree.
+  vm.runInContext(
+    "cp.failure = { id: 'system-message-position', ok: false, severity: 'fail',"
+    + " title: 'T', detail: 'd', fixes: ['f'], docs: '' };", ctx);
+  const once = vm.runInContext("renderFailure()", ctx);
+  const dup = (once.match(/chat template rejects a system message/g) || []).length;
+  console.log(`${dup === 0 ? "PASS" : "FAIL"}  a finding the console already named is not repeated`);
+  if (dup !== 0) failed++;
+
+  // Nothing wrong, nothing rendered.
+  vm.runInContext("cp.failure = null; cp.trialFailure = null;", ctx);
+  const empty = vm.runInContext("renderFailure()", ctx);
+  console.log(`${empty === "" ? "PASS" : "FAIL"}  no failure box when nothing has failed`);
+  if (empty !== "") failed++;
+}
+
+// The matrix cell for an errored trial has to carry the same explanation: the
+// exception type alone ("UnknownApiError") names nothing anyone can act on.
+if (!process.argv[2]) {
+  vm.runInContext(
+    "state.data.runs[0].tasks[0].error_type = 'UnknownApiError';"
+    + "state.data.runs[0].tasks[0].resolved = false;"
+    + "state.data.runs[0].tasks[0].error_message = 'Error: Jinja Exception: "
+    + "System message must be at the beginning.';"
+    + "state.data.runs[0].tasks[0].error_finding = { id: 'system-message-position',"
+    + " title: 'The chat template rejects a non-first system message',"
+    + " fix: 'harness-arena template-fix' };", ctx);
+  // Earlier cases narrow the view; this one is about what a cell says, so
+  // restore the scope and filters the page starts from rather than inheriting
+  // whatever was last selected.
+  vm.runInContext(
+    "state.model = (state.data.models[0] || {}).fingerprint"
+    + " || (state.data.models[0] || {}).label;"
+    + "state.dataset = 'terminal-bench@2.0';"
+    + "state.hidden = new Set(); state.hidePartial = false;"
+    + "state.runPick = null; state.diffOnly = false;", ctx);
+  const mx = vm.runInContext(`renderMatrix(state.data, ${V})`, ctx);
+  const named = /chat template rejects a non-first system message/.test(mx);
+  const fix = /harness-arena template-fix/.test(mx);
+  const quoted = /Jinja Exception/.test(mx);
+  const ok = named && fix && quoted;
+  console.log(`${ok ? "PASS" : "FAIL"}  an errored cell explains itself`
+    + ` (named=${named} fix=${fix} quoted=${quoted})`);
+  if (!ok) failed++;
+}
+
 // Empty and partial state: a fresh checkout has no harnesses and no subsets, and
 // that is exactly when someone is most likely to be looking at these tabs.
 vm.runInContext(

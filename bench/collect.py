@@ -288,6 +288,33 @@ def _fault_kind(result: dict[str, Any], trial_dir: Path | None) -> str | None:
     return "harness"
 
 
+#: How much of a trial's exception to keep, split between its two informative
+#: ends. Harbor's message opens with the command it ran -- a 400-character shell
+#: one-liner before a single word about what went wrong -- and closes with the
+#: agent's last output, which is where the actual error is. Keeping only the
+#: head, which is what this did, showed every reader the same boilerplate and
+#: cut the explanation off: eight trials reported `UnknownApiError` and a
+#: `printf | claude --print` command line, while the sentence naming the cause
+#: sat 5 KB further down in the same string.
+_ERROR_HEAD = 220
+_ERROR_TAIL = 900
+
+
+def salient_error(message: str | None) -> str | None:
+    """A trial's exception, trimmed to the parts that say anything.
+
+    Both ends, because they answer different questions: the head says which
+    step failed, the tail says why. The middle of a captured stdout is the
+    agent doing its job and is never the reason it stopped.
+    """
+    text = strip_ansi(message or "").strip()
+    if not text:
+        return None
+    if len(text) <= _ERROR_HEAD + _ERROR_TAIL:
+        return text
+    return f"{text[:_ERROR_HEAD].rstrip()}\n[...]\n{text[-_ERROR_TAIL:].lstrip()}"
+
+
 def _failed_at(result: dict[str, Any]) -> str:
     """When the trial stopped -- the moment to check the endpoint against.
 
@@ -296,6 +323,33 @@ def _failed_at(result: dict[str, Any]) -> str:
     """
     agent = result.get("agent_execution") or {}
     return str(agent.get("finished_at") or result.get("finished_at") or "")
+
+
+def _named_failure(message: str | None) -> dict[str, Any] | None:
+    """Name a trial's exception using the one catalogue of known failures.
+
+    Imported here rather than at module scope: `bench.diagnose` reaches for the
+    registry and the endpoint probe, and this module is imported by the
+    dashboard on every poll. Never raises -- a failure to explain a failure
+    must not become one.
+    """
+    if not message:
+        return None
+    try:
+        from bench import diagnose
+
+        finding = diagnose.explain(strip_ansi(str(message)))
+    except Exception:  # noqa: BLE001
+        return None
+    if finding is None:
+        return None
+    return {
+        "id": finding.id,
+        "title": finding.title,
+        # One step, not the whole list: this renders inside a matrix tooltip.
+        # The full finding is on the Diagnostics panel and in `doctor`.
+        "fix": finding.fixes[0] if finding.fixes else "",
+    }
 
 
 def normalize_trial(
@@ -350,10 +404,17 @@ def normalize_trial(
             else {}
         ),
         # Stripped before truncating: a failing harness's stderr ends up in
-        # here, and color codes would otherwise eat the 400 characters that
-        # were supposed to explain what went wrong.
-        "error_message": strip_ansi(exception.get("exception_message") or "")[:400]
-        or None,
+        # here, and color codes would otherwise eat the characters that were
+        # supposed to explain what went wrong. See salient_error for why both
+        # ends are kept rather than the first 400 characters.
+        "error_message": salient_error(exception.get("exception_message")),
+        # The same failure, named, with the steps that fix it -- or None when
+        # it is not one this rig has seen. Resolved here rather than in the
+        # page so the matrix, the console and `doctor` cannot describe one
+        # failure three ways, and so a tooltip can say "the chat template
+        # rejects this shape, here is the command" instead of showing a reader
+        # 900 characters of captured JSON and leaving them to recognise it.
+        "error_finding": _named_failure(exception.get("exception_message")),
         # A trial re-run later and grafted into a finished run. It scores like
         # any other, but the run's clock cannot include it -- see _wall_clock.
         "spliced": bool(trial_dir and (trial_dir / RERUN_MARKER).exists()),

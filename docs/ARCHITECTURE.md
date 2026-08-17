@@ -112,6 +112,51 @@ Labels are cached by fingerprint in `bench/models.json`, so the interactive prom
 once per distinct set of weights. That file is gitignored. It records which weights are on
 *your* disk, including their paths.
 
+### `bench/wireshape.py`
+
+What a harness puts on the wire, and whether the endpoint will accept it. A harness and a
+server can both be working and still be unable to talk, because they disagree about a request
+*shape* rather than a value — and nothing else here can see that: the model loads, `/v1/models`
+answers 200, every other harness runs.
+
+The case it was built for: Claude Code sends a **non-first `system`-role message** (its agent
+and skill listings, after the opening user turn). llama.cpp forwards that role to the model's
+chat template, and Qwen3.8-27B's template raises `System message must be at the beginning.` —
+so every trial died at its first request, having done no work. A property of the *weights*: the
+same llama.cpp build, Claude Code and Harbor had run a full sweep two days earlier.
+
+Two rules keep the check from becoming its own source of broken runs:
+
+- **A control request decides whether the question means anything.** Every probe sends the same
+  payload twice, once ordinary and once in the shape the harness sends, and a rejection only
+  counts when the ordinary shape was accepted first. Without it, a wrong model id or a missing
+  credential reads as "this server hates Claude Code". Same rule as
+  `probe.supports_reasoning_effort`, for the same reason.
+- **Only a recognised rejection blocks.** A refusal whose text is not one this module knows is
+  reported and not acted on, so a novel error message can never turn a working endpoint into an
+  unrunnable one. The worst a surprise can do is produce a warning.
+
+Which harnesses are asked is read off the catalog, not listed here: a harness is
+Anthropic-shaped if its entry sets `ANTHROPIC_BASE_URL`. So the next Messages-API harness is
+covered the day it is added, and a sweep of OpenAI-shaped harnesses costs zero requests.
+
+Also home to `base_url_root()` (`bench/runner.py` re-exports it) and to `patch_template()`,
+which removes a template's refusal by replacing the `raise_exception` with the system turn the
+template already emits for a leading system message. It refuses rather than guesses: not
+ChatML, or a loop that does not bind `content`, and it declines to edit. The patch touches only
+the branch that currently aborts, so every conversation that renders today renders
+byte-identically.
+
+### `bench/template.py`
+
+`harness-arena template-fix`. Reads the template off `/props`, reports which shapes the endpoint
+refuses, writes the patched copy, and prints the `--chat-template-file` line. `--verify` re-asks
+the endpoint after you restart it, which is the only check that establishes the patch took
+effect.
+
+It never touches the server, and it never rewrites a request. A harness whose traffic the rig
+rewrites is no longer the harness being measured.
+
 ### `bench/cli.py`
 
 Dispatch only. Each command forwards its remaining arguments to the module that owns them, so

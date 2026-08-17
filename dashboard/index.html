@@ -755,6 +755,20 @@ table.data tr:hover td { background: var(--surface-2); }
 #tip .t-h { color: var(--phosphor-dim); font-weight: 700; margin-bottom: 4px; }
 #tip .t-r { color: var(--ink-2); }
 #tip .t-r b { color: var(--ink); font-weight: 700; }
+/* A captured exception, as written. `pre-wrap` because the elision marker and
+   the agent's own line breaks are the structure -- reflowed into a paragraph
+   it becomes the wall of text this was meant to replace. Bounded so a long
+   capture cannot grow the tooltip past the viewport; the run's own files hold
+   the untruncated version. */
+#tip .err-msg {
+  margin-top: 3px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 190px;
+  overflow: hidden;
+  border-left: 2px solid var(--hairline);
+  padding-left: 7px;
+}
 #tip .t-checks {
   margin: 5px 0;
   padding: 5px 0;
@@ -1023,6 +1037,23 @@ textarea { resize: vertical; min-height: 68px; line-height: 1.45; }
 
 .checklist { list-style: none; margin: 0; padding: 0; }
 .failure-box { margin: 0 0 10px; }
+/* A trial's captured error, as written. Scrolls rather than grows: this sits
+   above the console, and a 900-character capture that pushed the console off
+   the screen would trade one unreadable thing for another. */
+.trial-err {
+  margin: 4px 0 0;
+  padding: 6px 8px;
+  max-height: 200px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--ink-2);
+  background: var(--sunken, rgba(0, 0, 0, 0.28));
+  border-left: 2px solid var(--rule);
+  border-radius: 3px;
+}
 
 /* A failed check is a paragraph and a list of steps, not a one-line verdict --
    see renderFinding. Indented under its own mark so the steps read as belonging
@@ -1946,6 +1977,20 @@ function renderMatrix(data, runs) {
             t ? `<div class="t-r">wall clock <b>${dur(t.duration_s)}</b></div>` : "",
             t && t.n_output_tokens != null ? `<div class="t-r">output tokens <b>${int(t.n_output_tokens)}</b></div>` : "",
             t && t.error_type ? `<div class="t-r">exception <b>${esc(t.error_type)}</b></div>` : "",
+            // The exception type alone names almost nothing: eight identical
+            // `UnknownApiError` cells said only that an API call failed, while
+            // the sentence explaining it -- a chat template refusing the
+            // request -- was in the message the tooltip did not show. Both are
+            // here now, the named failure first because it carries the fix.
+            t && t.error_finding
+              ? `<div class="t-r">${esc(t.error_finding.title)}
+                   ${t.error_finding.fix
+                      ? `<div class="mono-dim">fix: ${esc(t.error_finding.fix)}</div>`
+                      : ""}</div>`
+              : "",
+            t && t.error_message
+              ? `<div class="t-r"><div class="mono-dim err-msg">${esc(t.error_message)}</div></div>`
+              : "",
             // Not labelled "exception": it is a scored failure, and the row
             // exists to explain why a failed cell has no checks to show rather
             // than to report something going wrong.
@@ -2761,6 +2806,9 @@ const cp = {
   // couple of seconds while a run is going.
   failure: null,
   failureFrom: "",
+  // The running job's newest failed trial, from GET /api/run/log. Harbor's
+  // console says a command failed; only the trial's own result.json says why.
+  trialFailure: null,
   orphans: null,       // GET /api/containers: leftover containers, networks, pool
   editing: null,       // harness id open in the editor, or "+" for a new one
 };
@@ -3631,8 +3679,26 @@ function wireRun() {
    Rendered above the console, not inside it: the console is a tail and scrolls
    away, and this is the part worth keeping in view. */
 function renderFailure() {
-  if (!cp.failure) return "";
-  return `<ul class="checklist failure-box">${renderFinding(cp.failure)}</ul>`;
+  const parts = [];
+  if (cp.failure) parts.push(renderFinding(cp.failure));
+  // The trial's own error, when the console could not account for it. Harbor
+  // prints that a command failed and what it classified the failure as; the
+  // sentence saying why is only ever in the trial's result.json. Shown under
+  // its own heading so it is never mistaken for something the console said.
+  const tf = cp.trialFailure;
+  if (tf && (!cp.failure || (tf.finding && tf.finding.id !== cp.failure.id))) {
+    if (tf.finding) parts.push(renderFinding(tf.finding));
+    parts.push(`<li class="finding no">
+      <span class="mark no">✕</span>
+      <span class="what">${esc(tf.trial || "a trial")} failed${
+        tf.error_type ? ` — ${esc(tf.error_type)}` : ""}</span>
+      <div class="finding-body">
+        ${tf.message ? `<pre class="trial-err">${esc(tf.message)}</pre>` : ""}
+      </div>
+    </li>`);
+  }
+  if (!parts.length) return "";
+  return `<ul class="checklist failure-box">${parts.join("")}</ul>`;
 }
 
 /* Ask the server what the console's tail means.
@@ -3662,6 +3728,9 @@ async function pollRun() {
   try {
     const data = await api("/api/run/log?limit=600");
     cp.log = data.lines || [];
+    const hadTrial = JSON.stringify(cp.trialFailure || null);
+    cp.trialFailure = data.trial_failure || null;
+    const trialChanged = hadTrial !== JSON.stringify(cp.trialFailure);
     const was = cp.server ? JSON.stringify(cp.server.supervisor) : null;
     if (cp.server) cp.server.supervisor = data.supervisor;
     const box = $("#run-console");
@@ -3671,7 +3740,7 @@ async function pollRun() {
     }
     // Repaints its own box rather than the tab: this sits above a console the
     // reader may be scrolled into, and a full re-render would lose that.
-    if (await lookupFailure()) {
+    if ((await lookupFailure()) || trialChanged) {
       const slot = $("#run-failure");
       if (slot) slot.innerHTML = renderFailure();
     }

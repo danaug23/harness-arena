@@ -216,6 +216,50 @@ SIGNATURES: tuple[_Signature, ...] = (
         severity="warn",
     ),
     _Signature(
+        id="system-message-position",
+        title="The model's chat template rejects a system message that is not first",
+        needles=("system message must be at the beginning",),
+        detail=(
+            "Claude Code sends its agent and skill listings as a system-role "
+            "message after the first user turn. The endpoint passes that role "
+            "straight to the model's chat template, and this template aborts "
+            "rendering rather than emitting it -- so every request the harness "
+            "makes answers HTTP 500 and every trial dies at its first call, "
+            "having done no work. This is a property of the weights, not of "
+            "the server: the same llama.cpp build serving different weights "
+            "runs the same harness fine, which is why it appears the moment "
+            "you swap models and nothing else changed."
+        ),
+        fixes=(
+            "Patch the template: harness-arena template-fix",
+            "Restart llama-server with --chat-template-file pointed at the "
+            "file it writes, then `harness-arena doctor` to confirm.",
+            "The other harnesses are unaffected -- anything speaking "
+            "/v1/chat/completions sends one leading system message and never "
+            "reaches this branch.",
+        ),
+    ),
+    _Signature(
+        id="chat-template-error",
+        title="The model's chat template refused to render the request",
+        needles=("jinja exception",),
+        detail=(
+            "The endpoint accepted the request and the model's own chat "
+            "template rejected it while turning it into tokens. That is a "
+            "disagreement between what the harness sends and what these "
+            "weights were packaged to accept, so it fails identically on every "
+            "request rather than intermittently."
+        ),
+        fixes=(
+            "Read the template's own message above -- it names the rule that "
+            "was broken.",
+            "harness-arena template-fix reports what the loaded template "
+            "refuses and patches the cases this rig has seen.",
+            "Harnesses speaking a different wire format are usually "
+            "unaffected; run those while you sort this out.",
+        ),
+    ),
+    _Signature(
         id="endpoint-refused-effort",
         title="The endpoint refused a reasoning effort",
         needles=("reasoning", "unsupported"),
@@ -473,8 +517,14 @@ def check_disk(config: Config) -> Finding:
                    detail=f"{free_gb:.0f} GB free at {anchor}")
 
 
-def check_endpoint(config: Config) -> Finding:
-    """Everything else can be perfect and a run still measures nothing."""
+def check_endpoint(config: Config) -> tuple[Finding, Any]:
+    """Everything else can be perfect and a run still measures nothing.
+
+    Returns the finding and, when there is one, the identity it was built from.
+    The identity is handed on rather than re-probed: `check_wire_shapes` needs
+    the served model id to ask its question, and asking the endpoint twice for
+    the same fact is two more requests on every dashboard poll.
+    """
     from bench.probe import probe
 
     try:
@@ -490,9 +540,77 @@ def check_endpoint(config: Config) -> Finding:
                 "Check the endpoint on the Setup tab, or run "
                 "`harness-arena init`.",
             ]),
-        )
+        ), None
     return Finding(id="endpoint", title="Model endpoint",
-                   detail=f"{identity.served_id} at {identity.base_url}")
+                   detail=f"{identity.served_id} at {identity.base_url}"), identity
+
+
+def check_wire_shapes(config: Config, identity: Any) -> Finding | None:
+    """Whether this endpoint accepts the request shapes the harnesses send.
+
+    A model server can be up, correct and serving the right weights and still
+    be unable to answer one harness, because the model's chat template rejects
+    a shape that harness sends. Nothing else here can see that: the endpoint
+    answers /v1/models, the other harnesses run, and only the one you were
+    measuring dies -- once per trial, at its first request.
+
+    Returns None when no catalogued harness sends a shape worth asking about,
+    so an endpoint serving only OpenAI-shaped harnesses is not probed at all.
+    See bench/wireshape.py for why a refusal has to be recognised before it is
+    treated as one.
+    """
+    from bench import registry as registry_mod
+    from bench import wireshape
+
+    try:
+        catalog = registry_mod.load()
+        harnesses = sorted(catalog.get("harnesses") or {})
+        verdicts = wireshape.check_selection(
+            config.endpoint, catalog, harnesses,
+            served_id=getattr(identity, "served_id", ""),
+        )
+    except Exception as exc:  # noqa: BLE001 - a report must never be the failure
+        return Finding(id="wire-shapes", title="Request shapes", severity="warn",
+                       detail=f"could not be checked: {exc}",
+                       fixes=["Re-run `harness-arena doctor`; the endpoint may "
+                              "have been busy."])
+    if not verdicts:
+        return None
+
+    refused = [v for v in verdicts if v.blocks]
+    if refused:
+        first = refused[0]
+        names = sorted({h for v in refused for h in v.harnesses})
+        return Finding(
+            id="wire-shapes",
+            title=f"This endpoint refuses a request shape {', '.join(names)} sends",
+            severity="fail",
+            detail=(
+                f"{first.shape.detail} The endpoint answered HTTP "
+                f"{first.status}: {first.message}"
+            ),
+            fixes=list(first.shape.fixes),
+            docs="docs/TROUBLESHOOTING.md",
+        )
+
+    unknown = [v for v in verdicts if v.result == wireshape.UNKNOWN]
+    if unknown:
+        return Finding(
+            id="wire-shapes",
+            title="Request shapes could not be checked",
+            severity="warn",
+            detail="; ".join(f"{v.shape.title}: {v.why}" for v in unknown),
+            fixes=["Nothing is blocked by this -- a shape that could not be "
+                   "asked about is left to behave as it did before this check "
+                   "existed.",
+                   "If a run then fails at its first request on every trial, "
+                   "run `harness-arena template-fix` to see what the model's "
+                   "chat template refuses."],
+        )
+    return Finding(
+        id="wire-shapes", title="Request shapes",
+        detail=f"{len(verdicts)} checked, all accepted",
+    )
 
 
 def check_workspace() -> Finding:
@@ -512,8 +630,9 @@ def check_workspace() -> Finding:
 
 
 #: Ordered cheapest and most-commonly-wrong first, so the first failure a reader
-#: sees is usually the one to fix. `endpoint` is last because it is the only one
-#: that makes a network request.
+#: sees is usually the one to fix. The two network checks are last, and in this
+#: order: `wire-shapes` needs the model id `endpoint` discovers, and asking a
+#: server what it will accept is pointless until it is known to answer.
 def run_checks(config: Config | None = None, *, include_endpoint: bool = True
                ) -> list[Finding]:
     """Every check, as findings. Never raises: a broken check is a finding."""
@@ -537,7 +656,15 @@ def run_checks(config: Config | None = None, *, include_endpoint: bool = True
         check_disk(config),
     ]
     if include_endpoint:
-        findings.append(check_endpoint(config))
+        endpoint, identity = check_endpoint(config)
+        findings.append(endpoint)
+        # Only worth asking once the endpoint is known to answer at all, and
+        # only about shapes some catalogued harness actually sends -- so this
+        # is usually two one-token requests, and often none.
+        if identity is not None:
+            shapes = check_wire_shapes(config, identity)
+            if shapes is not None:
+                findings.append(shapes)
     return findings
 
 

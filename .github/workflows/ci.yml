@@ -60,6 +60,9 @@ jobs:
       - name: Diagnostics and failure signatures
         run: python tests/test_diagnose.py
 
+      - name: Request-shape probing and the template patch
+        run: python tests/test_wireshape.py
+
       - name: Dashboard render paths
         run: node tests/test_dashboard.mjs
 

@@ -31,6 +31,10 @@ COMMANDS: dict[str, tuple[str, str]] = {
     "init": ("", "Create config.yaml interactively"),
     "doctor": ("", "Check that everything needed to run is present and working"),
     "probe": ("bench.probe", "Identify the model at the endpoint (--speed to time it)"),
+    "template-fix": (
+        "bench.template",
+        "Patch a chat template that refuses a harness's request shape",
+    ),
     "bench": ("bench.runner", "Run the benchmark, one harness after another"),
     "dash": ("dashboard.server", "Serve the live dashboard"),
     "export": ("dashboard.server", "Write a standalone snapshot HTML"),

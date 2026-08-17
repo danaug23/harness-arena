@@ -20,6 +20,7 @@ import secrets
 import shutil
 import subprocess
 import sys
+import textwrap
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -33,12 +34,20 @@ from bench import (
     subset_dataset,
     subset_names,
     subset_path,
+    wireshape,
 )
 from bench import registry as registry_mod
 from bench.config import DEFAULT_CONTEXT_WINDOW, Config, ConfigError, scrub
 from bench.probe import ModelIdentity, add_endpoint_args, config_from_args, describe, resolve
 from bench.supervisor import clear_run_marker, write_run_marker
 from bench.watchdog import HEALTH_FILENAME, EndpointWatchdog, health_url
+
+# Re-exported, not defined here. {base_url_root} is a statement about how an
+# Anthropic client addresses an endpoint, so it lives with the rest of that
+# knowledge in bench.wireshape -- which bench.diagnose can then import without
+# pulling in the runner. Named here so bench.runner.base_url_root, which the
+# substitutions below and tests/test_local_agents.py both use, still resolves.
+from bench.wireshape import base_url_root  # noqa: F401  (re-export)
 
 MANIFEST_NAME = "harness-bench.json"
 
@@ -160,7 +169,6 @@ def effective_context(model: ModelIdentity, config: Config) -> tuple[int, str]:
     return DEFAULT_CONTEXT_WINDOW, "fallback"
 
 
-
 #: What a harness with a reasoning knob is told when the endpoint can think.
 #: Harbor's own default for Codex, kept so that turning this into a probed
 #: value changes nothing for a server that was already working.
@@ -264,33 +272,74 @@ def check_context_floor(
     )
 
 
-#: A trailing API-version segment, e.g. the "/v1" in http://host:8002/v1.
-#:
-#: Which of the two forms a harness wants is not a style choice, it is a
-#: property of the client SDK, and the two families disagree:
-#:
-#:   * Anthropic's client owns the version segment. It posts to
-#:     <root>/v1/messages, so handing it a base URL that already ends in /v1
-#:     produces /v1/v1/messages. Measured against claude-cli 2.1.226 pointed at
-#:     a logging server, not inferred from the docs.
-#:   * OpenAI's clients do not. Codex posts to <base_url>/responses, so the
-#:     same URL must keep its /v1. Measured the same way, codex-cli 0.147.0.
-#:
-#: Both are therefore correct and neither can be the single value of
-#: {base_url}. Hence a second placeholder rather than a per-harness fixup: the
-#: distinction belongs to the SDK, so every Anthropic-shaped harness added
-#: later wants the same thing.
-_VERSION_SUFFIX = re.compile(r"/+v\d+/*$")
+def preflight_wire_shapes(
+    config: Config,
+    registry: dict[str, Any],
+    harnesses: list[str],
+    model: ModelIdentity,
+    *,
+    enabled: bool = True,
+) -> list[str]:
+    """Drop harnesses this endpoint cannot talk to, before any container starts.
 
+    Same intent as `check_context_floor` and the opposite arithmetic: that one
+    refuses a harness the *configuration* cannot satisfy, this one refuses a
+    harness the *endpoint* will not accept a request from. Both exist because
+    the alternative is a full sweep of identical first-request failures -- 25
+    trials at three minutes of retries each, with nothing measured.
 
-def base_url_root(base_url: str) -> str:
-    """`base_url` with any trailing API-version segment removed.
+    Only the incompatible harnesses are dropped. A sweep is a list of
+    independent runs, and a shape one harness sends says nothing about the
+    others: on the run that produced this, six of seven harnesses were fine
+    against the very endpoint that could not serve the seventh.
 
-    Idempotent, and a no-op for a URL that has none -- an endpoint served at a
-    bare host:port stays exactly as configured.
+    Returns the harnesses that should still run. Never raises: a probe that
+    cannot answer leaves the selection exactly as it found it.
     """
-    stripped = (base_url or "").strip()
-    return _VERSION_SUFFIX.sub("", stripped) or stripped
+    if not enabled or not harnesses:
+        return harnesses
+    try:
+        verdicts = wireshape.check_selection(
+            config.endpoint, registry, harnesses, served_id=model.served_id
+        )
+    except Exception as exc:  # noqa: BLE001 - a preflight must not be the failure
+        print(f"\n  [!] wire-shape preflight could not run ({exc}); continuing.")
+        return harnesses
+    if not verdicts:
+        return harnesses
+
+    for verdict in verdicts:
+        if verdict.result == wireshape.ACCEPTED:
+            continue
+        if verdict.result == wireshape.UNKNOWN:
+            # Reported and not acted on. An endpoint that works today must not
+            # become unrunnable because a probe read an unfamiliar answer as
+            # fatal -- see bench/wireshape.py.
+            print(f"\n  [ ] {verdict.shape.title}: not established -- {verdict.why}")
+            if verdict.message:
+                print(f"      endpoint said: {verdict.message}")
+            continue
+        print(f"\n  [!] This endpoint refuses a request shape "
+              f"{', '.join(verdict.harnesses)} sends.")
+        print(textwrap.indent(textwrap.fill(verdict.shape.detail, 72), "      "))
+        if verdict.message:
+            print(f"\n      endpoint said: {verdict.message}")
+        for step in verdict.shape.fixes:
+            print(textwrap.indent(textwrap.fill(step, 68), "        ")
+                  .replace("        ", "      - ", 1))
+
+    blocked = wireshape.blocked_harnesses(verdicts)
+    if not blocked:
+        return harnesses
+
+    remaining = [h for h in harnesses if h not in blocked]
+    print(f"\n  not starting: {', '.join(sorted(blocked))}")
+    if remaining:
+        print(f"  unaffected, running as asked: {', '.join(remaining)}")
+    else:
+        print("  every selected harness sends a shape this endpoint refuses.")
+    print("  (--skip-wire-check runs them anyway, which is what just failed.)")
+    return remaining
 
 
 def _substitutions(model: ModelIdentity, config: Config) -> dict[str, str]:
@@ -922,6 +971,14 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--no-input", action="store_true")
     parser.add_argument(
+        "--skip-wire-check",
+        action="store_true",
+        help="Do not ask the endpoint whether it accepts the request shapes the "
+        "selected harnesses send. The check costs two one-token requests and "
+        "only ever drops a harness whose refusal it recognises, so this exists "
+        "for the case where the probe itself is the thing misbehaving.",
+    )
+    parser.add_argument(
         "harbor_args",
         nargs="*",
         help="Extra args forwarded to `harbor run` verbatim (put after --)",
@@ -1029,6 +1086,20 @@ def main(argv: list[str] | None = None) -> int:
                 "is rejected, every trial fails at its first request."
             )
 
+    # Before the batch id, the run marker and the first container: a harness
+    # this endpoint will not serve produces a job directory full of identical
+    # first-request failures, and the cheapest moment to find that out is now.
+    # A dry run is asking what *would* happen, and dropping a harness would
+    # answer a different question, so it is left alone.
+    requested = list(harnesses)
+    if not args.dry_run:
+        harnesses = preflight_wire_shapes(
+            config, registry, harnesses, model, enabled=not args.skip_wire_check
+        )
+    skipped = [h for h in requested if h not in harnesses]
+    if not harnesses:
+        return 1
+
     # One id for this whole invocation, shared by every harness it runs, so a
     # sweep can be recognised as one thing afterwards rather than inferred from
     # the subset name -- which stops being a sweep the second time you use it.
@@ -1076,6 +1147,14 @@ def main(argv: list[str] | None = None) -> int:
             clear_run_marker(marker_dir)
 
     print(f"\nDone. {len(harnesses) - failures}/{len(harnesses)} harness runs succeeded.")
+    if skipped:
+        # Named again at the end, and counted as a failure of the invocation.
+        # A sweep that quietly ran six of the seven harnesses you asked for
+        # reads afterwards as a sweep of six, and the missing row is indis-
+        # tinguishable from one you never requested.
+        print(f"Not run: {', '.join(sorted(skipped))} "
+              f"-- this endpoint refuses a request shape they send.")
+        return 1
     return 1 if failures else 0
 
 

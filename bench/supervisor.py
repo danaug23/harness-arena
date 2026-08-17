@@ -503,6 +503,30 @@ class Supervisor:
             self._job.finished_at = self._job.finished_at or _utc_now()
             self._job.status = "finished" if code == 0 else "failed"
 
+    def job_dirs(self) -> list[Path]:
+        """Run directories the current job created, newest first.
+
+        The job knows which directories predated it, so "ours" needs no parsing
+        of the child's stdout. Empty when nothing is running, or before the
+        first harness has written anything.
+        """
+        with self._lock:
+            job = self._job
+        if job is None:
+            return []
+        runs_dir = self._config.resolved_runs_dir()
+        if not runs_dir.exists():
+            return []
+        try:
+            mine = [
+                p for p in runs_dir.iterdir()
+                if p.is_dir() and p.name not in job._preexisting
+                and not p.name.startswith(".")
+            ]
+        except OSError:
+            return []
+        return sorted(mine, key=lambda p: p.name, reverse=True)
+
     def _mark_manifests_stopped(self, job: Job, reason: str) -> None:
         """Record the stop in every manifest this run created.
 

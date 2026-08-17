@@ -864,6 +864,7 @@ harness-arena export        Write a standalone snapshot HTML
 harness-arena collect       Print a text summary of all runs
 harness-arena throughput    Wall clock and LLM utilization per run
 harness-arena clipping      How often each harness hit the output ceiling
+harness-arena template-fix  Patch a chat template that refuses a harness
 harness-arena prepull       Cache task images ahead of a run
 harness-arena subset        Regenerate a stratified task subset
 ```
@@ -1057,7 +1058,7 @@ mention, found by running the CLI and reading the source:
 | oh-my-pi | Install the release binary; the npm package needs Bun. Every model role must be pinned or a subagent calls a cloud provider. |
 | opencode | `--auto` and `--pure`. Its token stream can end without the final `step_finish`, so the exported session is the fallback. |
 | DeepSeek Harness | A C++ toolchain. It is npm-only and its tree reaches `node-pty`, a native addon with no prebuilt, so the install runs `node-gyp`; Terminal-Bench 2's images have `gcc` but no `python3`, `make` or `g++`, and every trial died in setup. **Two** `--`, not one: its launcher and its one-shot app each parse with commander, the launcher eats the first, and the app then reads a task beginning with `-` as an unknown option. And `DSH_PERMISSION_MODE=danger-full-access`, which is both the approval policy and the only mode that does not need a bubblewrap or Landlock backend the container does not have. |
-| Claude Code | `ANTHROPIC_BASE_URL` must **not** end in `/v1`, the client appends `/v1/messages` itself, and it has to be set on the harbor process, because the built-in agent reads that one straight from `os.environ`. |
+| Claude Code | `ANTHROPIC_BASE_URL` must **not** end in `/v1`, the client appends `/v1/messages` itself, and it has to be set on the harbor process, because the built-in agent reads that one straight from `os.environ`. It also sends a **non-first `system`-role message**, which some chat templates refuse — see below. |
 | Codex | `base_url` must **keep** `/v1`: it appends only `/responses`. A custom provider block also fails to load without a `name` field, with `provider name must not be empty`. |
 
 The pattern: the failures are silent. A harness that is not allowed to use tools
@@ -1123,6 +1124,37 @@ reasoning, and a server can serve `/v1/responses` while refusing an effort. Add
 `"reasoning":{"effort":"low"}` to that body to see which you have, the rig
 probes exactly this and adapts, but it is the difference between a Codex run
 that works and one that fails on every task.
+
+**A 200 on the first is not sufficient either, and this one is not about the
+server at all.** Claude Code sends a second, *non-first* `system`-role message
+after the opening user turn — its agent and skill listings. llama.cpp forwards
+that role to the model's chat template, and some templates abort rather than
+render it:
+
+```
+Error: Jinja Exception: System message must be at the beginning.
+```
+
+That is a property of the **weights**, so it appears the moment you load a
+different model and nothing else changes: the same llama.cpp build, Claude Code
+version and Harbor version ran a full sweep against one GGUF and could not make
+a single request against the next. Add a trailing system message to the first
+`curl` above to check for it, or let the rig ask:
+
+```
+harness-arena template-fix          # reports it, and writes a patched template
+harness-arena template-fix --verify # after restarting the server with it
+```
+
+`harness-arena bench` asks the same question before it builds a container, and
+drops only the harnesses whose refusal it recognises — the rest of the sweep
+runs untouched, which is what usually happens, since every OpenAI-shaped harness
+sends one leading system message and never reaches that branch. `--skip-wire-check`
+turns the preflight off.
+
+The patch is to the template, never to the request. Rewriting what a harness
+sends would mean the harness under test is no longer the harness being measured,
+which is the one thing this rig cannot trade away.
 
 Two further notes worth knowing before reading results:
 
