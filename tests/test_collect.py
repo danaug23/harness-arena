@@ -638,6 +638,18 @@ def test_a_trial_in_flight_advances_the_clock_but_its_setup_does_not(
     time.sleep(setup_seconds)
     (live / "agent" / "agent.txt").write_text("thinking\n", encoding="utf-8")
 
+    # Let the agent clock actually start before reading it. Without this the
+    # log is measured microseconds after it was created, and whether the live
+    # trial contributes anything at all comes down to the agreement between
+    # time.time() and the filesystem's own timestamp -- which on Windows is
+    # close enough to zero to land on either side. It did: `agent_total_s >
+    # 60.0` failed once on windows/py3.12 while every other matrix cell passed,
+    # on a commit that touched none of this. The interval below is not part of
+    # what is being tested; it just has to be larger than the clocks disagree
+    # by. The setup gap the test is actually about is unaffected, since this
+    # moves the agent clock and the directory's age together.
+    time.sleep(0.25)
+
     trial_age = time.time() - (live).stat().st_ctime
     run = load_run(job)
     live_s = run["agent_total_s"] - 60.0
