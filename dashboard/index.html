@@ -4402,12 +4402,36 @@ function runIdSignature() {
   return ((state.data && state.data.runs) || []).map((r) => r.run_id).join(" ");
 }
 
+/* How long a refetch may take before the page admits it is refetching. */
+const SLOW_SCAN_MS = 400;
+
+/* The last completed scan, in ms. Seeds the decision below. */
+let lastScanMs = 0;
+
+/* Whether this tick is allowed to dim the page at all.
+ *
+ * Holding the previous render beats flashing a skeleton, and a scan that is
+ * genuinely slow should say so. But a threshold alone strobes: a tree whose
+ * scan sits *near* the limit crosses it on some ticks and not others, and the
+ * whole page pulses dark and light every five seconds. That happened -- adding
+ * a per-trial log read to the collector took a 209 ms scan to 408 ms, and the
+ * page began flickering on a 400 ms trigger.
+ *
+ * So a tick may only dim when the *previous* scan was already slow. One slow
+ * scan never dims; a persistently slow tree dims and stays dimmed, which is the
+ * signal the dim was for. The cost of being wrong is holding a render for one
+ * extra tick, which is what this function exists to prefer anyway.
+ */
+function shouldDimOnRefetch(previousScanMs) {
+  return previousScanMs > SLOW_SCAN_MS;
+}
+
 async function poll() {
   const app = $("#app");
-  // Hold the previous render rather than flashing a skeleton -- but only mark
-  // it stale if the scan is actually slow. Dimming on every 5s tick would
-  // strobe the whole page for a fetch that normally takes milliseconds.
-  const slow = setTimeout(() => app.classList.add("stale"), 400);
+  const started = Date.now();
+  const slow = shouldDimOnRefetch(lastScanMs)
+    ? setTimeout(() => app.classList.add("stale"), SLOW_SCAN_MS)
+    : null;
   try {
     const [res, act] = await Promise.all([
       fetch("/api/results", { cache: "no-store" }),
@@ -4434,7 +4458,8 @@ async function poll() {
   } catch (err) {
     setLive(false, "server unreachable");
   } finally {
-    clearTimeout(slow);
+    lastScanMs = Date.now() - started;
+    if (slow) clearTimeout(slow);
     app.classList.remove("stale");
   }
 }

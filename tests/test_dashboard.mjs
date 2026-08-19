@@ -1790,5 +1790,36 @@ run("maintenance tab (no state)", "renderMaintenance()", 10);
   }
 }
 
+/* --- the refetch dim must never strobe ------------------------------------
+ *
+ * Holding the previous render beats flashing a skeleton, and a genuinely slow
+ * scan should say so -- but a bare threshold pulses. A tree whose scan sits
+ * near the limit crosses it on some ticks and not others, and the page goes
+ * dark and light every five seconds. That happened: adding a per-trial log read
+ * to the collector took a 209 ms scan to 408 ms against a 400 ms trigger.
+ *
+ * So a tick may only dim when the *previous* scan was already slow.
+ */
+{
+  const cases = [];
+  const dim = (ms) => vm.runInContext(`shouldDimOnRefetch(${ms})`, ctx);
+  const limit = vm.runInContext("SLOW_SCAN_MS", ctx);
+
+  cases.push(["a fast previous scan never dims", dim(12) === false]);
+  cases.push(["...nor one exactly at the threshold", dim(limit) === false]);
+  cases.push(["...nor the very first tick", dim(0) === false]);
+  cases.push(["a persistently slow scan dims", dim(limit + 1) === true]);
+  cases.push(["...and stays dimmed while it stays slow", dim(5000) === true]);
+  // The strobe itself: alternating either side of the limit must not alternate
+  // the dim, because the decision is made from the previous scan only.
+  cases.push(["a scan hovering at the limit does not strobe",
+    dim(limit - 1) === false && dim(limit) === false]);
+
+  for (const [label, ok] of cases) {
+    console.log(`${ok ? "PASS" : "FAIL"}  ${label}`);
+    if (!ok) failed++;
+  }
+}
+
 console.log(failed ? `\n${failed} check(s) failed` : "\nall checks passed");
 process.exit(failed ? 1 : 0);

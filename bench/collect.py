@@ -249,12 +249,52 @@ _OUTPUT_CAP_SIGNATURES = (
 OUTPUT_CAP_ERROR = "OutputTokenExceededError"
 
 
-def _trace_tail(trial_dir: Path | None) -> str:
-    """The end of this trial's agent log, or "" if it has none."""
+#: Derived trace facts, keyed by the log's identity on disk. The dashboard calls
+#: `load_runs` every five seconds over the whole runs tree, and without this it
+#: re-read the tail of every finished agent log on every one of those polls: 203
+#: reads and 1.5 MB per poll on a 13-run tree, which took the scan from 209 ms
+#: to 408 ms and pushed it over the 400 ms the page waits before dimming. The
+#: symptom was the page flickering dark and light every few seconds.
+#:
+#: Safe to cache because every trace read here belongs to a *finished* trial: a
+#: trial still running has no result.json, so `normalize_trial` is never called
+#: for it and this is never reached. The key still carries size and mtime, so a
+#: file that does change is re-read rather than trusted.
+_TRACE_FACTS: dict[tuple[str, int, int], tuple[bool, dict[str, Any] | None]] = {}
+
+#: Enough for years of runs on one machine, and a bound rather than a leak: a
+#: long-lived dashboard process should not grow without limit. Cleared whole
+#: rather than evicted one at a time -- the next poll refills what it needs, and
+#: the alternative is an LRU that costs more to maintain than the reads it saves.
+_TRACE_CACHE_MAX = 20_000
+
+
+def _trace_facts(trial_dir: Path | None) -> tuple[bool, dict[str, Any] | None]:
+    """(hit the output cap, tokens recovered) from this trial's agent log.
+
+    Both answers come from one read, because both live at the end of the same
+    file and reading it twice would double the cost this cache exists to remove.
+    """
     if not trial_dir:
-        return ""
+        return False, None
     log = find_log(trial_dir)
-    return tail(log, _TRACE_TAIL_BYTES) if log else ""
+    if not log:
+        return False, None
+    try:
+        stat = log.stat()
+        key = (str(log), stat.st_size, stat.st_mtime_ns)
+    except OSError:
+        return False, None
+    cached = _TRACE_FACTS.get(key)
+    if cached is not None:
+        return cached
+
+    trace = tail(log, _TRACE_TAIL_BYTES)
+    facts = (_hit_output_cap(trace), _tokens_from_trace(trace))
+    if len(_TRACE_FACTS) >= _TRACE_CACHE_MAX:
+        _TRACE_FACTS.clear()
+    _TRACE_FACTS[key] = facts
+    return facts
 
 
 def _hit_output_cap(trace: str) -> bool:
@@ -577,13 +617,15 @@ def normalize_trial(
 
     tokens = _token_totals(result, bills_per_token=bills_per_token)
 
-    # The agent's own log, read only in the two cases where Harbor's record is
-    # silent about something that happened. Both are cheap because both are
-    # conditional: a trial that raised, or that reported its tokens, is never
-    # opened. A finished, unremarkable trial costs no extra read at all.
+    # The agent's own log, consulted only in the two cases where Harbor's record
+    # is silent about something that happened. A trial that raised, or that
+    # reported its tokens, is never opened; the rest are read once and cached on
+    # the log's identity, because a finished trial's log does not change.
     needs_cap_check = not exception_type and not resolved
     needs_tokens = tokens["n_input_tokens"] is None
-    trace = _trace_tail(trial_dir) if (needs_cap_check or needs_tokens) else ""
+    hit_cap, recovered = (
+        _trace_facts(trial_dir) if (needs_cap_check or needs_tokens) else (False, None)
+    )
 
     # Harbor never saw a token for this trial. That is not the same as the
     # harness not spending any -- on Windows it is usually Harbor failing to
@@ -591,11 +633,9 @@ def normalize_trial(
     # take the harness's word where the harness wrote one down, and record that
     # the number came from there rather than from Harbor.
     tokens_source = "harbor" if not needs_tokens else None
-    if needs_tokens and trace:
-        recovered = _tokens_from_trace(trace)
-        if recovered:
-            tokens = {**tokens, **recovered}
-            tokens_source = "agent trace"
+    if needs_tokens and recovered:
+        tokens = {**tokens, **recovered}
+        tokens_source = "agent trace"
 
     # A harness that stopped because one completion hit the output ceiling.
     #
@@ -611,7 +651,7 @@ def normalize_trial(
     # nothing anywhere said the cap is what ended these trials, so eight zeros
     # that the run setting produced sat in the score looking like eight wrong
     # answers. `hit_output_cap` is that fact, and n_output_cap counts it.
-    hit_cap = bool(needs_cap_check and trace and _hit_output_cap(trace))
+    hit_cap = bool(needs_cap_check and hit_cap)
 
     # A submission the verifier ran and could not score is a failure, not an
     # error -- see VERIFIER_RAN_EXCEPTIONS. Transport still wins: if the
