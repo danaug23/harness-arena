@@ -1054,6 +1054,92 @@ check("a short path says nothing",
       check_path_budget(_ROOT / "r", "j", ["t"], "hermes"), None)
 
 
+
+# ---------------------------------------------------------------------------
+# One reasoning effort, handed to every harness that has a knob for one
+# ---------------------------------------------------------------------------
+
+print("\n-- reasoning effort reaches the harnesses --")
+
+from bench.config import with_overrides  # noqa: E402
+from bench.runner import KNOWN_REASONING_EFFORTS  # noqa: E402
+from harnesses.hermes import Hermes  # noqa: E402
+from harnesses.omp import Omp  # noqa: E402
+
+# Every level the Run tab offers is one all four wired harnesses accept. The
+# rig deliberately stops at `high`: omp and hermes go on to xhigh/max/ultra and
+# codex and dsh do not, and a sweep where two harnesses reasoned at different
+# levels because only some understood the word is not one experiment.
+check("the offered vocabulary is the one every wired harness shares",
+      list(KNOWN_REASONING_EFFORTS), ["none", "minimal", "low", "medium", "high"])
+
+# hermes spells the levels exactly as this rig does -- read off `hermes chat
+# --help` for the pinned build: none, minimal, low, medium, high, xhigh, max,
+# ultra. So no translation, and "none" is a value it accepts rather than an
+# absence it has to infer.
+with tempfile.TemporaryDirectory() as _tmp:
+    _hermes = Hermes(Path(_tmp), model_name="local/a-model",
+                     base_url="http://example.invalid:8002/v1",
+                     context_window=131072, reasoning_effort="low")
+    check("hermes is told the effort on its own flag",
+          _hermes._reasoning_effort, "low")
+    _plain = Hermes(Path(_tmp), model_name="local/a-model",
+                    base_url="http://example.invalid:8002/v1",
+                    context_window=131072)
+    # Absent is not "none": hermes then uses its own agent.reasoning_effort,
+    # and the model reasons either way. An unset effort is one nobody recorded.
+    check("...and left alone when the sweep resolved nothing",
+          _plain._reasoning_effort, None)
+
+# omp is the one that needs translating: its "do not think" level is spelled
+# `off`, and handing its enum "none" would be refused at construction with a
+# message about a choice list rather than about the setting somebody picked.
+with tempfile.TemporaryDirectory() as _tmp:
+    check("omp's refusal to think is translated into its own spelling",
+          Omp(Path(_tmp), model_name="local/a-model",
+              base_url="http://example.invalid:8002/v1",
+              reasoning_effort="none")._resolved_flags.get("thinking"), "off")
+    check("...while every other level passes through untouched",
+          Omp(Path(_tmp), model_name="local/a-model",
+              base_url="http://example.invalid:8002/v1",
+              reasoning_effort="medium")._resolved_flags.get("thinking"), "medium")
+    # The flag stays usable on omp's own terms for anyone who wants xhigh.
+    check("an explicit thinking level wins over the sweep's",
+          Omp(Path(_tmp), model_name="local/a-model",
+              base_url="http://example.invalid:8002/v1",
+              reasoning_effort="low", thinking="xhigh")
+          ._resolved_flags.get("thinking"), "xhigh")
+    check("no effort, no flag",
+          Omp(Path(_tmp), model_name="local/a-model",
+              base_url="http://example.invalid:8002/v1")
+          ._resolved_flags.get("thinking"), None)
+
+# End to end: what the Run tab picks is what each harness is handed. Checked on
+# the built command rather than on the adapters, because the catalog is the part
+# that decides whether a harness is offered the value at all.
+_low = with_overrides(_cfg2, reasoning_effort="low")
+check("a chosen effort reads as configured, not probed",
+      effective_reasoning_effort(_model, _low), ("low", "configured"))
+for _h in ("codex", "dsh", "hermes", "omp"):
+    _argv, _ = build_command(
+        _h, _catalog["harnesses"][_h], _model, _catalog, _low,
+        jobs_dir=Path("runs"), name="j", dataset="terminal-bench@2.0",
+        n_concurrent=1, n_attempts=1, n_tasks=1, include_tasks=None,
+        extra_args=None, allow_hosts=False, agent_timeout_multiplier=8.0,
+        n_concurrent_agents=1, env_build_timeout_multiplier=4.0,
+        max_retries=0, retry_include=None,
+    )
+    check_true(f"{_h} is handed the sweep's effort",
+               "reasoning_effort=low" in " ".join(_argv))
+
+# The harnesses with no knob are not silently assumed to be at the same effort.
+# The model reasons either way, so these are runs whose effort nobody recorded,
+# and the manifest and the Run tab both say so rather than implying otherwise.
+for _h in ("claude-code", "minion", "dmfa-minion", "opencode"):
+    check(f"{_h} is recorded as not having been told",
+          uses_placeholder(_catalog["harnesses"][_h], "reasoning_effort"), False)
+
+
 print()
 if failures:
     print(f"{len(failures)} FAILED: {', '.join(failures)}")

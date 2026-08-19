@@ -68,6 +68,18 @@ class Omp(BaseInstalledAgent):
     _OUTPUT_FILENAME = "omp.txt"
     _PROVIDER = "local"
 
+    #: This rig's reasoning vocabulary is Codex's, and omp spells its "do not
+    #: think" level differently -- `off` where the rig says `none`. Everything
+    #: else lines up, so this is a one-entry translation rather than a table.
+    #: Read off `omp --help` for the pinned build: off, minimal, low, medium,
+    #: high, xhigh, max, auto.
+    #:
+    #: The rig deliberately offers only the five levels every wired harness can
+    #: accept, so `xhigh` and above are reachable by configuring them directly
+    #: but are not what a sweep resolves -- one setting has to mean the same
+    #: thing everywhere or it is not one setting.
+    _EFFORTS = {"none": "off"}
+
     CLI_FLAGS = [
         CliFlag(
             "thinking",
@@ -90,8 +102,24 @@ class Omp(BaseInstalledAgent):
         max_tokens: int | str | None = None,
         api: str = "openai-completions",
         api_key: str | None = None,
+        # The rig's effort, in the rig's vocabulary. Translated into omp's
+        # spelling here and handed to the `thinking` flag, rather than asking
+        # the catalog to write `thinking: '{reasoning_effort}'` directly: that
+        # would put "none" against an enum whose "do not think" value is "off",
+        # and the flag would be rejected at construction with a message about a
+        # choice list rather than about the setting the user actually chose.
+        #
+        # An explicit `thinking=` still wins, so the flag remains available on
+        # its own terms for anyone who wants omp's own vocabulary.
+        reasoning_effort: str | None = None,
         **kwargs: Any,
     ) -> None:
+        effort = (reasoning_effort or "").strip().lower()
+        if effort and not kwargs.get("thinking"):
+            # Unmapped values pass through: omp's vocabulary is wider than the
+            # rig's and a release may widen it further. omp rejects an unknown
+            # level itself, which is loud and immediate.
+            kwargs["thinking"] = self._EFFORTS.get(effort, effort)
         super().__init__(*args, **kwargs)
         # Harbor passes --ak values through as strings.
         self._base_url = (

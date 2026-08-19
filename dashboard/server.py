@@ -70,6 +70,7 @@ from bench.probe import (
     remember_label,
     suggest_label,
 )
+from bench.runner import KNOWN_REASONING_EFFORTS, uses_placeholder
 from bench.supervisor import (
     Supervisor,
     SupervisorError,
@@ -210,6 +211,17 @@ class App:
             ],
             "api_key_set": bool(self.config.endpoint.resolve_api_key()),
             "harnesses": catalog.get("harnesses", {}),
+            # Which harnesses a reasoning effort actually reaches. Computed here
+            # with the same predicate the runner and the manifest use, rather
+            # than sniffed for "{reasoning_effort}" in the page: three copies of
+            # one rule drift, and the copy that drifts is the one telling
+            # somebody what their run is about to measure. The model reasons
+            # either way, so a harness missing from this list is not one that
+            # will not think -- it is one whose effort nobody records.
+            "reasoning_effort_harnesses": sorted(
+                h for h, spec in (catalog.get("harnesses") or {}).items()
+                if uses_placeholder(spec, "reasoning_effort")
+            ),
             "datasets": catalog.get("datasets", []),
             "defaults": catalog.get("defaults", {}),
             "editable_defaults": sorted(registry_mod.EDITABLE_DEFAULTS),
@@ -463,6 +475,27 @@ class App:
                 raise ApiError(f"`{name}` must be between {low} and {high}.")
             return value
 
+        def _effort(raw: Any) -> str | None:
+            """One of the efforts every wired harness can accept, or nothing.
+
+            Validated here rather than passed through, because this value
+            reaches a subprocess argument list. Restricted to the rig's
+            vocabulary rather than the union of what the harnesses accept:
+            omp and hermes go up to `ultra`, codex and dsh do not, and a sweep
+            where two harnesses reasoned at different levels because only some
+            understood the word is not one experiment.
+            """
+            if raw in (None, "", "auto"):
+                return None
+            value = str(raw).strip().lower()
+            if value not in KNOWN_REASONING_EFFORTS:
+                raise ApiError(
+                    f"`reasoning_effort` must be one of "
+                    f"{', '.join(KNOWN_REASONING_EFFORTS)}, or 'auto' to probe "
+                    f"the endpoint."
+                )
+            return value
+
         try:
             job = self.supervisor.start(
                 harnesses=harnesses,
@@ -475,6 +508,7 @@ class App:
                 ),
                 n_concurrent=_num("n_concurrent", int, 1, 32),
                 n_concurrent_agents=_num("n_concurrent_agents", int, 1, 32),
+                reasoning_effort=_effort(payload.get("reasoning_effort")),
                 allow_hosts=bool(payload.get("allow_hosts")),
                 debug_capture=bool(payload.get("debug_capture")),
                 dry_run=bool(payload.get("dry_run")),

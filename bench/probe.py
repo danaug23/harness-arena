@@ -823,6 +823,16 @@ def add_endpoint_args(parser: argparse.ArgumentParser) -> None:
         help="Model id to benchmark (required for providers that serve many)",
     )
     parser.add_argument("--label", default=None, help="Override the model label")
+    parser.add_argument(
+        "--reasoning-effort",
+        default=None,
+        help=(
+            "Reasoning effort every harness that has a knob for one is told. "
+            "Omitted, it is probed from the endpoint. One value for the whole "
+            "sweep: a run where two harnesses reasoned differently is not one "
+            "experiment."
+        ),
+    )
 
 
 def config_from_args(args: argparse.Namespace) -> Config:
@@ -833,6 +843,11 @@ def config_from_args(args: argparse.Namespace) -> Config:
         base_url=getattr(args, "base_url", None),
         model=getattr(args, "model", None),
         label=getattr(args, "label", None),
+        # Highest-precedence layer, same as the rest: an unset flag leaves
+        # whatever config.yaml holds, and a value here reads as "configured"
+        # in the manifest rather than "probed" -- which is the true statement,
+        # because somebody chose it.
+        reasoning_effort=getattr(args, "reasoning_effort", None),
     )
 
 

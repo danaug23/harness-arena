@@ -289,6 +289,22 @@ def main() -> int:
             call("POST", "/api/run", {"harnesses": [], "subset": "../../etc"})[0],
             400,
         )
+        # The reasoning effort reaches a subprocess argument list, so it is
+        # checked against the vocabulary every wired harness shares rather than
+        # passed through. omp and hermes would take "ultra"; codex and dsh would
+        # not, and a sweep where two harnesses reasoned at different levels
+        # because only some understood the word is not one experiment.
+        check(
+            "unknown reasoning effort rejected",
+            call("POST", "/api/run", {"harnesses": [], "reasoning_effort": "ultra"})[0],
+            400,
+        )
+        check(
+            "...and so is anything shaped like an argument",
+            call("POST", "/api/run",
+                 {"harnesses": [], "reasoning_effort": "--dry-run"})[0],
+            400,
+        )
         check(
             "out-of-range multiplier",
             call("POST", "/api/run", {"agent_timeout_multiplier": 9999})[0],

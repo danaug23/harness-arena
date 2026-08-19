@@ -123,6 +123,7 @@ harnesses:
       api_key: '{api_key}'
       context_window: '{n_ctx}'
       max_tokens: '{max_tokens}'
+      reasoning_effort: '{reasoning_effort}'
   minion:
     label: minion
     vendor: Sentdex
@@ -146,6 +147,7 @@ harnesses:
       api_key: '{api_key}'
       context_window: '{n_ctx}'
       max_tokens: '{max_tokens}'
+      reasoning_effort: '{reasoning_effort}'
   claude-code:
     label: Claude Code
     vendor: Anthropic

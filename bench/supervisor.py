@@ -212,6 +212,7 @@ class Supervisor:
         agent_timeout_multiplier: float | None = None,
         n_concurrent: int | None = None,
         n_concurrent_agents: int | None = None,
+        reasoning_effort: str | None = None,
         debug_capture: bool = False,
         allow_hosts: bool = False,
         dry_run: bool = False,
@@ -259,6 +260,12 @@ class Supervisor:
                 argv += ["--n-concurrent", str(n_concurrent)]
             if n_concurrent_agents:
                 argv += ["--n-concurrent-agents", str(n_concurrent_agents)]
+            # Omitted rather than defaulted, like the dataset above: absent, the
+            # runner probes the endpoint for what it accepts, and pinning the
+            # page's idea of an effort into every run would stop that probe
+            # from ever mattering.
+            if reasoning_effort:
+                argv += ["--reasoning-effort", str(reasoning_effort)]
             if allow_hosts:
                 argv.append("--allow-hosts")
             if debug_capture:

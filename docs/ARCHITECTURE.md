@@ -529,6 +529,10 @@ totals by 18x without erroring. See [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
   // an effort outright, and a run that reasoned is not comparable to one that
   // did not.
   "reasoning_effort": "none", "reasoning_effort_source": "probed",
+  // Whether that effort reached *this* harness. Four of the eight in the
+  // catalog have a knob for one; the model reasons either way, so a false here
+  // means an effort nobody recorded rather than one nobody spent.
+  "reasoning_effort_applied": true,
   "max_retries": 1, "debug_capture": true,
   "subset": "stratified-25", "is_partial": true,
   "harbor_version": "0.20.0",

@@ -72,9 +72,21 @@ class Hermes(HarborHermes):
         # pass it rather than let hermes guess. Absent -> hermes decides.
         context_window: int | str | None = None,
         max_tokens: int | str | None = None,
+        # `hermes chat --reasoning LEVEL`, which takes none, minimal, low,
+        # medium, high, xhigh, max or ultra -- a superset of this rig's
+        # vocabulary, so every effort the rig can resolve is one hermes
+        # accepts and no translation is needed. Read off `hermes chat --help`
+        # for the pinned build, not from the docs.
+        #
+        # Absent -> hermes uses its own `agent.reasoning_effort`, which is the
+        # behaviour every run before this had. That is worth stating because it
+        # is not "no thinking": the model reasons either way, so an unset
+        # effort is one nobody recorded rather than one nobody spent.
+        reasoning_effort: str | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(*args, **kwargs)
+        self._reasoning_effort = (reasoning_effort or "").strip().lower() or None
         self._base_url = base_url or self._get_env("OPENAI_BASE_URL")
         # Never empty. hermes picks OPENAI_API_KEY for any non-openrouter base
         # URL, and an empty value short-circuits credential resolution before
@@ -280,6 +292,12 @@ class Hermes(HarborHermes):
         toolsets = self._resolved_flags.get("toolsets")
         if toolsets:
             parts.append(f"--toolsets {shlex.quote(str(toolsets))}")
+        # Passed through rather than validated against a list here: hermes owns
+        # its own vocabulary and a release is free to widen it. An unknown value
+        # is rejected by hermes at startup, which is loud and immediate -- the
+        # same rule the dsh adapter follows for the same reason.
+        if self._reasoning_effort:
+            parts.append(f"--reasoning {shlex.quote(self._reasoning_effort)}")
 
         run_cmd = (
             'export PATH="$HOME/.local/bin:$PATH" && '

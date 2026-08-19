@@ -3413,6 +3413,41 @@ function renderRun() {
             <label for="run-agents">Generating at once</label>
             <input type="number" id="run-agents" min="1" max="32" value="${esc(d.n_concurrent_agents ?? 1)}">
           </div>
+          <div class="field">
+            <label for="run-effort">Reasoning effort</label>
+            <select id="run-effort">
+              <option value="auto">Auto &mdash; ask the endpoint</option>
+              <option value="none">none</option>
+              <option value="minimal">minimal</option>
+              <option value="low">low</option>
+              <option value="medium">medium</option>
+              <option value="high">high</option>
+            </select>
+          </div>
+        </div>
+        <div class="hint">
+          One effort for the whole sweep, handed to every harness that has a knob
+          for one &mdash; a run where two harnesses reasoned differently is not one
+          experiment. ${(() => {
+            // Both lists come from the server, which computes them with the
+            // same predicate the manifest records -- see the settings payload.
+            const yes = s.reasoning_effort_harnesses || [];
+            const all = Object.keys(s.harnesses || {});
+            const no = all.filter((h) => !yes.includes(h)).sort();
+            if (!all.length) return "";
+            // Named rather than counted. The model reasons either way -- it is
+            // a reasoning model -- so a harness that cannot be told is not one
+            // that will not think, it is one whose effort nobody recorded, and
+            // that is worth seeing before pressing start rather than after.
+            return `<br>Honoured by <b>${yes.join(", ") || "no harness in this catalog"}</b>.`
+              + (no.length
+                ? ` <span class="warn-line">${no.join(", ")} ${no.length === 1
+                    ? "has no such knob and will use its own default"
+                    : "have no such knob and will use their own defaults"}.</span>`
+                : "");
+          })()}
+          Auto probes the endpoint and uses what it accepts, which is what every
+          run before this did.
         </div>
         <div class="hint">
           Keep “generating at once” at your server's slot count, or requests queue and
@@ -3610,6 +3645,9 @@ function runSpecFromForm() {
     agent_timeout_multiplier: num("run-mult"),
     n_concurrent: num("run-conc"),
     n_concurrent_agents: num("run-agents"),
+    // "auto" is the absence of a choice, not a value: the server drops it and
+    // the runner probes, which is the behaviour every run before this had.
+    reasoning_effort: val("run-effort") || "auto",
     allow_hosts: checked("run-allow-hosts"),
     debug_capture: checked("run-debug"),
   };

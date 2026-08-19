@@ -955,6 +955,35 @@ harnesses were actually given a ceiling (`agent_max_tokens_source`), prints the
 ones it cannot cap before a sweep starts, and the dashboard shows **no output
 cap** where a number would otherwise imply one.
 
+### Setting the reasoning effort
+
+The **Run** tab has a *Reasoning effort* selector: `Auto`, or one of `none`,
+`minimal`, `low`, `medium`, `high`. One value for the whole sweep, because a run
+where two harnesses reasoned differently is not one experiment. `Auto` probes
+the endpoint for what it accepts, which is what every run before this did.
+
+It reaches every harness that has a knob for one, which is four of the eight in
+the catalog. Read off each CLI's own `--help` for the pinned build:
+
+| Harness | Flag | Note |
+|---|---|---|
+| codex | `model_reasoning_effort` | same vocabulary |
+| dsh | `reasoning_effort` | three levels, the adapter maps onto them |
+| hermes | `--reasoning` | accepts `none`…`ultra`, a superset |
+| omp | `--thinking` | spells "do not think" as `off`; the adapter translates |
+| claude-code, minion, dmfa-minion, opencode | — | no effort level |
+
+The selector stops at `high` on purpose. omp and hermes go on to `xhigh`, `max`
+and `ultra`; codex and dsh do not, and a sweep where two harnesses reasoned at
+different levels because only some understood the word would not be one
+experiment.
+
+The four with no knob are **not** running without thinking. The model reasons
+either way — it is a reasoning model — so an unset effort is one nobody
+recorded, not one nobody spent. The manifest records
+`reasoning_effort_applied` per run and the dashboard says so on the run, rather
+than showing a value the harness never received.
+
 A related trap is `{reasoning_effort}` and `{max_tokens}` in the same catalog
 block. Reasoning tokens are billed against the output cap, so a high effort can
 spend the whole budget before the model emits a tool call. The DeepSeek Harness
