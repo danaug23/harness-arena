@@ -240,6 +240,109 @@ def agent_max_tokens_for(window: int) -> int:
     return max(4096, window // 8)
 
 
+#: What the manifest records when a harness has no knob to take the ceiling.
+NO_OUTPUT_CAP = "harness has no output cap"
+CAP_APPLIED = "applied"
+
+
+def output_cap_for(spec: dict[str, Any], window: int) -> tuple[int | None, str]:
+    """The output ceiling this harness will actually run under, and how we know.
+
+    Every harness in the catalog is handed one number, and until this existed
+    the manifest recorded that number for all of them. For most that is true.
+    For Codex it is not, and the gap is not small.
+
+    codex-cli 0.147.0 takes no per-response output cap. Checked against the
+    shipped binary rather than the docs, the same way everything else about
+    Codex in this rig was: its `ConfigToml` carries 96 keys, including
+    `model_context_window`, `model_auto_compact_token_limit` and
+    `tool_output_token_limit`, and none of them caps a completion.
+    `model_max_output_tokens` does not appear at all. So the catalog cannot
+    hand Codex `{max_tokens}` and does not try to.
+
+    What made this worth a function is that the manifest claimed otherwise.
+    A 25-task sweep recorded `agent_max_tokens: 16384` for both Claude Code and
+    Codex; Claude Code's largest completion was exactly 16,384 and Codex's was
+    92,436. The two tied at 0.68, and the tie was between a harness under a 16K
+    output budget and one under none. A run that cannot say which is which is
+    not a comparison.
+
+    Returns (ceiling, source). A ceiling of None means no cap reached the
+    harness, which is a fact about the run and is recorded as one.
+    """
+    if uses_placeholder(spec, "max_tokens"):
+        return agent_max_tokens_for(window), CAP_APPLIED
+    return None, NO_OUTPUT_CAP
+
+
+def report_output_caps(
+    registry: dict[str, Any], harnesses: list[str], window: int
+) -> list[str]:
+    """Say, before a sweep starts, which harnesses it cannot cap.
+
+    Printed rather than blocked. An uncapped harness is still worth measuring
+    -- it is how that harness runs -- and refusing it would leave the rig
+    unable to benchmark Codex at all. What is not acceptable is finding out
+    afterwards, from a manifest that said otherwise.
+    """
+    catalog = registry.get("harnesses") or {}
+    uncapped = [
+        h
+        for h in harnesses
+        if output_cap_for(catalog.get(h) or {}, window)[1] == NO_OUTPUT_CAP
+    ]
+    if not uncapped:
+        return []
+    print(
+        f"\n  [!] no output cap reaches {', '.join(sorted(uncapped))}: "
+        f"{'it takes' if len(uncapped) == 1 else 'they take'} no max-tokens "
+        f"setting."
+    )
+    print(
+        f"      Every other harness in this sweep is clamped at "
+        f"{agent_max_tokens_for(window):,} tokens per response. "
+        f"A measured Codex completion ran to 92,436."
+    )
+    print(
+        "      The runs are still worth having; they are not a like-for-like "
+        "comparison of output budget, and the manifest records which is which."
+    )
+    return uncapped
+
+
+def warn_reasoning_under_cap(
+    harness_id: str, spec: dict[str, Any], window: int, effort: str
+) -> bool:
+    """Warn when a harness will reason and be capped on the same budget.
+
+    Measured on dsh__qwen3-8-27b...__20260818T171816Z, which ran the DeepSeek
+    Harness at `reasoning_effort: high` under a 16,384-token ceiling: 8 of 25
+    trials ended on that ceiling and every one scored 0, three of them without
+    ever producing a tool call. Reasoning tokens count against max_tokens, so
+    the effort setting and the cap are spending the same budget.
+
+    Returns whether the warning fired, so a caller can test it.
+    """
+    if not effort or effort == "none":
+        return False
+    if not uses_placeholder(spec, "reasoning_effort"):
+        return False
+    if not uses_placeholder(spec, "max_tokens"):
+        # Uncapped: the effort has nothing to collide with. Codex is here.
+        return False
+    print(
+        f"\n  [!] {harness_id} is being told to reason at '{effort}' *and* "
+        f"capped at {agent_max_tokens_for(window):,} output tokens."
+    )
+    print(
+        "      Reasoning tokens count against that cap, so a long think can "
+        "consume the whole budget before the model emits a tool call, and the "
+        "trial ends having done nothing. Measured: 8 of 25 trials, all scoring "
+        "zero, on the run that produced this warning."
+    )
+    return True
+
+
 def check_context_floor(
     harness_id: str, spec: dict[str, Any], model: ModelIdentity, config: Config
 ) -> None:
@@ -269,6 +372,126 @@ def check_context_floor(
         f"match it -- raising the number alone makes the server truncate "
         f"silently.\n"
         f"  Or run the other harnesses and leave {harness_id} out."
+    )
+
+
+#: Windows refuses to open a path at or beyond this length unless long paths
+#: are enabled machine-wide, and the refusal is a plain FileNotFoundError on a
+#: file that is sitting right there.
+WINDOWS_MAX_PATH = 260
+
+#: How deep, in characters, each harness writes below a trial directory.
+#: Measured off the runs on disk rather than assumed -- the deepest artifact
+#: each harness produced across every run in this rig:
+#:
+#:   claude-code  109  agent/sessions/projects/-app/<uuid>/subagents/<id>.meta.json
+#:   omp          102  agent/omp/sessions/<stamp>_<uuid>/<name>.jsonl
+#:   codex         96  agent/sessions/<yyyy>/<mm>/<dd>/rollout-<stamp>-<uuid>.jsonl
+#:   dsh           85  agent/dsh/sessions/--app--/session-<uuid>/session.jsonl
+#:   everything else 32  verifier/original-repo-ctrf.json
+#:
+#: Codex is the one that has already cost something. Two trials in a 25-task
+#: sweep produced rollout paths of 260 and 264 characters; Harbor could not open
+#: either, so its trajectory conversion raised FileNotFoundError and both trials
+#: recorded no tokens at all -- one of them a solve worth 2.26M input and 140k
+#: output. Two more trials in the same run sat at 258. The run directory name is
+#: what pushes them over, and it is chosen before any of this exists.
+_TRIAL_SUBPATH: dict[str, int] = {
+    "claude-code": 109,
+    "omp": 102,
+    "codex": 96,
+    "dsh": 85,
+}
+
+#: For a harness with no measurement of its own. Above every non-session
+#: harness measured, below all four that write session trees: a harness nobody
+#: has profiled should not be assumed to be the cheap kind.
+_TRIAL_SUBPATH_DEFAULT = 64
+
+#: Harbor's own trial-directory suffix: "__" plus seven random characters.
+_TRIAL_SUFFIX = 9
+
+#: Assumed longest task name when the run does not name its tasks -- a full
+#: dataset sweep passes no --include-task-name, so there is no list to measure.
+#: 32 is the longest in Terminal-Bench 2 ("llm-inference-batching-scheduler",
+#: measured across all 89), and it is the dataset this rig runs by default. A
+#: dataset with longer names would make this warn late rather than early, which
+#: is the failure direction that costs a run rather than an annoyance.
+_ASSUMED_TASK_NAME = 32
+
+
+def path_budget(
+    jobs_dir: Path, job_name: str, task_names: list[str], harness_id: str
+) -> tuple[int, str]:
+    """Longest path this run will try to write, and the task that produces it."""
+    longest = max(task_names, key=len) if task_names else "?" * _ASSUMED_TASK_NAME
+    below = _TRIAL_SUBPATH.get(harness_id, _TRIAL_SUBPATH_DEFAULT)
+    # jobs_dir/job_name/<task>__<7>/<harness artifact>
+    total = (
+        len(str(jobs_dir.resolve()))
+        + 1 + len(job_name)
+        + 1 + len(longest) + _TRIAL_SUFFIX
+        + 1 + below
+    )
+    return total, longest
+
+
+def long_paths_enabled() -> bool | None:
+    """Whether Windows will open a path past MAX_PATH. None if unknowable."""
+    if os.name != "nt":
+        return True
+    try:
+        import winreg
+
+        with winreg.OpenKey(
+            winreg.HKEY_LOCAL_MACHINE,
+            r"SYSTEM\CurrentControlSet\Control\FileSystem",
+        ) as key:
+            return bool(winreg.QueryValueEx(key, "LongPathsEnabled")[0])
+    except Exception:  # noqa: BLE001 - a preflight must not be the failure
+        return None
+
+
+def check_path_budget(
+    jobs_dir: Path, job_name: str, task_names: list[str], harness_id: str
+) -> str | None:
+    """Warn before a run writes files this machine cannot then open.
+
+    Not fatal. The run still produces correct results; what it loses is the
+    artifacts written past the limit, and which of those matter depends on the
+    harness -- for Codex it is the session rollout Harbor reads token counts
+    from, so the trial scores normally and reports no tokens at all. Blocking a
+    sweep over that would be worse than the loss.
+
+    Returns the warning text, or None when there is nothing to say. Silent on
+    any platform that does not enforce MAX_PATH, and on a Windows machine that
+    has long paths turned on.
+    """
+    if long_paths_enabled():
+        return None
+    total, longest = path_budget(jobs_dir, job_name, task_names, harness_id)
+    if total < WINDOWS_MAX_PATH:
+        return None
+    over = total - WINDOWS_MAX_PATH + 1
+    which = (
+        f"The task that reaches it is '{longest}'."
+        if task_names
+        else f"Estimated against a {_ASSUMED_TASK_NAME}-character task name, "
+        f"the longest in Terminal-Bench 2."
+    )
+    return (
+        f"\n  [!] {harness_id}: this run's deepest artifact path is about "
+        f"{total} characters, and Windows stops at {WINDOWS_MAX_PATH}.\n"
+        f"      {which} Files past the limit "
+        f"are written and then cannot be reopened, which Harbor reports as "
+        f"FileNotFoundError on a file that exists -- measured cost: two trials "
+        f"that scored normally and recorded no tokens at all.\n"
+        f"      Fix, cheapest first:\n"
+        f"      - Enable long paths (needs admin, then a reboot):\n"
+        f"          Set-ItemProperty 'HKLM:\\SYSTEM\\CurrentControlSet\\Control"
+        f"\\FileSystem' LongPathsEnabled 1\n"
+        f"      - Or move runs_dir at least {over} characters shallower than "
+        f"{jobs_dir}."
     )
 
 
@@ -327,6 +550,11 @@ def preflight_wire_shapes(
         for step in verdict.shape.fixes:
             print(textwrap.indent(textwrap.fill(step, 68), "        ")
                   .replace("        ", "      - ", 1))
+        if not verdict.shape.fatal:
+            # Reported, and the run goes ahead. This shape costs the harness
+            # the tasks that send it, not the run -- see WireShape.fatal.
+            print(f"\n      Running {', '.join(verdict.harnesses)} anyway: this "
+                  f"costs the tasks that send this shape, not the run.")
 
     blocked = wireshape.blocked_harnesses(verdicts)
     if not blocked:
@@ -667,13 +895,27 @@ def write_manifest(
         # nothing else in the run data would reveal a mismatch.
         "context_window": context_window,
         "context_window_source": context_source,
-        "agent_max_tokens": agent_max_tokens_for(context_window),
+        # The ceiling this harness actually runs under, not the one the rig
+        # computed. Null when the harness takes no such setting -- recording the
+        # rig's number there made the manifest claim a cap that was never
+        # applied, which is how a capped harness and an uncapped one came to be
+        # compared as though they were the same experiment. See output_cap_for.
+        "agent_max_tokens": output_cap_for(spec, context_window)[0],
+        "agent_max_tokens_source": output_cap_for(spec, context_window)[1],
         # Recorded for the same reason as the window, and it is the stronger
         # case: a harness that reasoned and one that did not are not two
         # measurements of the same thing. Only some harnesses read it, but the
         # run either offered thinking or it did not.
         "reasoning_effort": reasoning_effort,
         "reasoning_effort_source": reasoning_source,
+        # Whether that effort actually reached *this* harness. Only some have a
+        # knob for it -- on the current catalog codex and dsh do, omp has one
+        # this catalog does not fill, and the rest have none -- and the model
+        # reasons either way, because it is a reasoning model. So a harness
+        # that was told nothing is not one that did not think; it is one whose
+        # effort nobody recorded. Without this the manifest described "told
+        # high" and "used its own default" with the same two fields.
+        "reasoning_effort_applied": uses_placeholder(spec, "reasoning_effort"),
         "dataset": dataset,
         # What the *benchmark's own* machinery was pointed at, when it has any.
         # tau3-bench simulates the user and judges in natural language, so these
@@ -827,6 +1069,16 @@ def run_one(
         arg if " " not in arg else f'"{arg}"' for arg in (scrub(a, config) for a in argv)
     )
     print(f"  $ {printable}\n")
+
+    # Both before the dry-run exit: a dry run exists to show what a real one
+    # would do, and "this run will write files it cannot reopen" is exactly the
+    # kind of thing worth learning without spending four hours first.
+    warning = check_path_budget(jobs_dir, name, include_tasks or [], harness_id)
+    if warning:
+        print(warning)
+    warn_reasoning_under_cap(
+        harness_id, spec, run_window, effective_reasoning_effort(model, config)[0]
+    )
 
     if dry_run:
         return 0
@@ -1057,6 +1309,11 @@ def main(argv: list[str] | None = None) -> int:
         print(f"\n  subset '{args.subset}': {len(subset_tasks)} tasks")
 
     harnesses = args.harness or known
+
+    # Said once for the sweep, beside the ceiling that was just announced --
+    # otherwise that line reads as a property of every run about to start, and
+    # for at least one of them it is not true.
+    report_output_caps(registry, harnesses, window)
 
     # Reported once the selection is known, because only some harnesses send an
     # effort at all. The fallback deserves a warning even though it is the old

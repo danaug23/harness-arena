@@ -936,6 +936,32 @@ Three sources, most authoritative first:
 Which one was used is recorded per run, because "128K, detected" and "4K,
 because nothing knew" are not the same claim about a result.
 
+### Not every harness can be capped
+
+`{max_tokens}` is offered to every harness; only the ones with a knob for it
+run under it. **Codex has none.** codex-cli 0.147.0's `ConfigToml` carries 96
+keys — `model_context_window`, `model_auto_compact_token_limit` and
+`tool_output_token_limit` among them — and not one of them caps a single
+completion; `model_max_output_tokens` does not appear in the binary at all.
+
+That is worth stating out loud, because for a while the manifest said
+otherwise. A 25-task sweep recorded `agent_max_tokens: 16384` for Claude Code
+and for Codex alike. Claude Code's largest completion was exactly 16,384;
+Codex's was 92,436. The two tied at 0.68, and the tie was between a harness
+under a 16K output budget and one under none.
+
+Nothing here can fix that — the knob does not exist — so the rig records which
+harnesses were actually given a ceiling (`agent_max_tokens_source`), prints the
+ones it cannot cap before a sweep starts, and the dashboard shows **no output
+cap** where a number would otherwise imply one.
+
+A related trap is `{reasoning_effort}` and `{max_tokens}` in the same catalog
+block. Reasoning tokens are billed against the output cap, so a high effort can
+spend the whole budget before the model emits a tool call. The DeepSeek Harness
+ran that way on 2026-08-18 and lost 8 of 25 trials to it — every one scoring
+zero, three without a single tool call, while the other 17 averaged 0.765.
+`bench` warns when a block asks for both.
+
 **Ollama cannot be detected.** It publishes no `/props`, and `/api/show` reports
 only the model's *architectural maximum*, not the window the server was
 started with. `/api/ps` reports none at all. Its own default has moved around

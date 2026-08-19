@@ -156,7 +156,17 @@ def _repaired_input(ctx: dict[str, Any]) -> float:
     return value
 
 
-def _token_totals(result: dict[str, Any]) -> dict[str, Any]:
+def _token_totals(result: dict[str, Any], *, bills_per_token: bool = True) -> dict[str, Any]:
+    """Tokens for one trial, and a cost only if anyone was actually charged.
+
+    `bills_per_token` is a property of the endpoint, not of the harness -- see
+    `config.Provider.bills_per_token`. Against a server you host, Harbor still
+    computes a dollar figure by looking the model *name* up in LiteLLM's price
+    table, and it lands: two runs on a free llama.cpp box were recorded at
+    $44.31 and $141.19. Worse, only the adapters that happen to compute it
+    produce one at all, so a cost column ranked two harnesses against nine
+    blanks. A number that is wrong for everyone is better dropped than shown.
+    """
     contexts: list[dict[str, Any]] = []
     agent_result = result.get("agent_result")
     if isinstance(agent_result, dict):
@@ -175,9 +185,133 @@ def _token_totals(result: dict[str, Any]) -> dict[str, Any]:
                 seen = True
     if not seen:
         return {"n_input_tokens": None, "n_output_tokens": None, "cost_usd": None}
-    if not totals["cost_usd"]:
+    if not totals["cost_usd"] or not bills_per_token:
         totals["cost_usd"] = None
     return totals
+
+
+# ----------------------------------------------------------------------------
+# What the agent's own trace says, when the trial record does not
+# ----------------------------------------------------------------------------
+#
+# Everything below reads the harness's own log rather than Harbor's result.json,
+# and only ever in the two cases where the result.json is silent about something
+# that happened. Both were found the same way: by reading a run that looked
+# clean and was not.
+
+
+#: How much of an agent log to read for the questions below. Both answers are
+#: written at the very end of a run -- the final turn's outcome, and the usage
+#: line that closes it -- and the logs themselves reach into the megabytes, so
+#: the tail is the whole of what is worth reading. `activity.tail` cuts at a
+#: line boundary, which matters here: a single dsh `assistant/message` line can
+#: carry 60 KB of reasoning on its own.
+_TRACE_TAIL_BYTES = 16_000
+
+#: Terminal states a harness records in its own trace when it stopped because
+#: one completion hit the output ceiling, rather than because the task was done.
+#:
+#: This exists because two harnesses treat the same event differently and only
+#: one of them says so. Harbor's Claude Code adapter raises
+#: OutputTokenExceededError, so the trial carries an exception and is counted as
+#: an error. The DeepSeek Harness writes `turn/end {"reason":{"kind":
+#: "max-tokens"}}`, exits, and leaves `exception_info: null` -- so Harbor
+#: records a clean, completed trial with a reward of 0, indistinguishable from
+#: an honest wrong answer.
+#:
+#: Measured on run dsh__qwen3-8-27b...__20260818T171816Z: 8 of 25 trials ended
+#: this way and every one of them scored 0, while the other 17 averaged 0.765.
+#: Three of the eight had produced no tool call at all -- one prompt in, one
+#: 16,384-token reasoning block out, dead -- and the run still reported "25
+#: completed, 0 errors". On the same eight tasks Claude Code and Codex each
+#: solved five, so this is the harness stopping, not the tasks being hard.
+#:
+#: Each entry is a tuple of needles that must all appear on one line, the same
+#: rule `_ENDPOINT_SIGNATURES` uses and for the same reason: a bare
+#: "max-tokens" appears in ordinary configuration echoes.
+_OUTPUT_CAP_SIGNATURES = (
+    ('"turn/end"', "max-tokens"),
+    ('"turn/end"', "max_tokens"),
+    ('"finish_reason"', '"length"'),
+    ("stop_reason", "max_tokens"),
+)
+
+#: The exception Harbor's Claude Code adapter raises when a completion reaches
+#: the ceiling. Recognised here so that a harness which raises about the cap and
+#: one which merely records it in its own trace both light the same flag --
+#: `hit_output_cap` -- and a reader comparing them is not left to notice that
+#: two harnesses hit the same wall and only one of them said so.
+#:
+#: The two are still counted differently on purpose, because they are different:
+#: Harbor discards the Claude Code trial ungraded, so it is an error, while the
+#: dsh adapter swallows its exit code specifically so the workspace still gets
+#: scored. One reached a verdict and one did not.
+OUTPUT_CAP_ERROR = "OutputTokenExceededError"
+
+
+def _trace_tail(trial_dir: Path | None) -> str:
+    """The end of this trial's agent log, or "" if it has none."""
+    if not trial_dir:
+        return ""
+    log = find_log(trial_dir)
+    return tail(log, _TRACE_TAIL_BYTES) if log else ""
+
+
+def _hit_output_cap(trace: str) -> bool:
+    """Whether the harness's own log says it stopped on the output ceiling."""
+    for line in trace.splitlines():
+        lowered = line.lower()
+        if any(all(n in lowered for n in group) for group in _OUTPUT_CAP_SIGNATURES):
+            return True
+    return False
+
+
+#: Usage as Codex writes it at the end of its stdout stream. Read only when
+#: Harbor recorded none, which happens when its own trajectory conversion could
+#: not open the session rollout -- on Windows, because the path crossed 260
+#: characters. Two measured trials lost every token that way, one of them a
+#: solve worth 2.26M input and 140k output, and the numbers were sitting in this
+#: line the whole time. See bench.runner.check_path_budget for the preflight
+#: that stops the path from getting that long in the first place.
+_TRACE_USAGE_KEYS = (
+    ("n_input_tokens", "input_tokens"),
+    ("n_cache_tokens", "cached_input_tokens"),
+    ("n_output_tokens", "output_tokens"),
+)
+
+
+def _tokens_from_trace(trace: str) -> dict[str, Any] | None:
+    """Token counts recovered from the agent's own log, or None if it has none.
+
+    Deliberately narrow: it reads a usage object a harness printed itself, and
+    never reconstructs one by counting text. A recovered number has to be the
+    same number Harbor would have recorded, or it is worse than the gap it
+    fills -- a token total nobody can trace to a source is not a measurement.
+    """
+    best: dict[str, Any] | None = None
+    for line in trace.splitlines():
+        line = line.strip()
+        if not line.startswith("{") or "usage" not in line:
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        usage = event.get("usage") if isinstance(event, dict) else None
+        if not isinstance(usage, dict):
+            continue
+        found = {
+            ours: usage[theirs]
+            for ours, theirs in _TRACE_USAGE_KEYS
+            if isinstance(usage.get(theirs), (int, float))
+        }
+        # Input and output both, or it is a partial record and folding it in
+        # would understate one half against harnesses that report both.
+        if "n_input_tokens" in found and "n_output_tokens" in found:
+            # Last one wins: Codex prints a running usage per turn and a final
+            # total, and the total is the one that closes the stream.
+            best = found
+    return best
 
 
 def _pretty_check(name: str) -> str:
@@ -353,12 +487,54 @@ def _named_failure(message: str | None) -> dict[str, Any] | None:
 
 
 def normalize_trial(
-    result: dict[str, Any], trial_dir: Path | None = None
+    result: dict[str, Any],
+    trial_dir: Path | None = None,
+    *,
+    bills_per_token: bool = True,
 ) -> dict[str, Any]:
     resolved, reward = _is_resolved(result.get("verifier_result"))
     fault = _fault_kind(result, trial_dir)
     exception = result.get("exception_info") or {}
     exception_type = exception.get("exception_type")
+    error_message = exception.get("exception_message")
+
+    tokens = _token_totals(result, bills_per_token=bills_per_token)
+
+    # The agent's own log, read only in the two cases where Harbor's record is
+    # silent about something that happened. Both are cheap because both are
+    # conditional: a trial that raised, or that reported its tokens, is never
+    # opened. A finished, unremarkable trial costs no extra read at all.
+    needs_cap_check = not exception_type and not resolved
+    needs_tokens = tokens["n_input_tokens"] is None
+    trace = _trace_tail(trial_dir) if (needs_cap_check or needs_tokens) else ""
+
+    # Harbor never saw a token for this trial. That is not the same as the
+    # harness not spending any -- on Windows it is usually Harbor failing to
+    # open its own session file because the path crossed 260 characters -- so
+    # take the harness's word where the harness wrote one down, and record that
+    # the number came from there rather than from Harbor.
+    tokens_source = "harbor" if not needs_tokens else None
+    if needs_tokens and trace:
+        recovered = _tokens_from_trace(trace)
+        if recovered:
+            tokens = {**tokens, **recovered}
+            tokens_source = "agent trace"
+
+    # A harness that stopped because one completion hit the output ceiling.
+    #
+    # Flagged, and deliberately nothing more. This trial reached a verdict --
+    # the dsh adapter swallows the non-zero exit for exactly this reason, so
+    # the workspace is scored rather than discarded ungraded -- and by the rule
+    # the rest of this module follows, a graded result is not an error. Calling
+    # it one would undo that on purpose, and would put a red glyph on the one
+    # outcome that is a real measurement of what the agent managed before it
+    # was cut off.
+    #
+    # What was missing is not a failure classification, it is the fact itself:
+    # nothing anywhere said the cap is what ended these trials, so eight zeros
+    # that the run setting produced sat in the score looking like eight wrong
+    # answers. `hit_output_cap` is that fact, and n_output_cap counts it.
+    hit_cap = bool(needs_cap_check and trace and _hit_output_cap(trace))
 
     # A submission the verifier ran and could not score is a failure, not an
     # error -- see VERIFIER_RAN_EXCEPTIONS. Transport still wins: if the
@@ -366,7 +542,6 @@ def normalize_trial(
     # the denominator regardless of how far the verifier got afterwards.
     unscorable = fault != "transport" and _reached_a_verdict(exception_type)
 
-    tokens = _token_totals(result)
     checks = read_checks(trial_dir) if trial_dir else []
     n_passed = sum(1 for c in checks if c["status"] == "passed")
 
@@ -407,7 +582,17 @@ def normalize_trial(
         # here, and color codes would otherwise eat the characters that were
         # supposed to explain what went wrong. See salient_error for why both
         # ends are kept rather than the first 400 characters.
-        "error_message": salient_error(exception.get("exception_message")),
+        "error_message": salient_error(error_message),
+        # True when the harness stopped on its own output ceiling. Distinct
+        # from error_type, which the Claude Code adapter also sets for this:
+        # the flag says the *cap* is what ended the trial, which is a run
+        # setting to change, not a harness to blame.
+        "hit_output_cap": hit_cap or exception_type == OUTPUT_CAP_ERROR,
+        # "harbor" | "agent trace" | None. Where this trial's token counts came
+        # from, so a recovered number is never mistaken for one Harbor recorded
+        # -- and so a run full of Nones reads as a collection failure rather
+        # than as a harness that spent nothing.
+        "tokens_source": tokens_source,
         # The same failure, named, with the steps that fix it -- or None when
         # it is not one this rig has seen. Resolved here rather than in the
         # page so the matrix, the console and `doctor` cannot describe one
@@ -432,6 +617,83 @@ def normalize_trial(
 # ----------------------------------------------------------------------------
 # Run assembly
 # ----------------------------------------------------------------------------
+
+
+def _provider_bills(provider_id: str | None) -> bool:
+    """Whether tokens against this run's endpoint cost anything.
+
+    Unknown or absent reads as "does not bill". A manifest written before
+    providers carried the flag came from the local-only setup this rig started
+    as, and inventing a price for it is the failure being fixed, not a
+    conservative default. Never raises: a config import must not be able to
+    stop a finished run from being read.
+    """
+    if not provider_id:
+        return False
+    try:
+        from bench.config import PROVIDERS
+
+        provider = PROVIDERS.get(str(provider_id))
+    except Exception:  # noqa: BLE001 - reading a run must not depend on config
+        return False
+    return bool(provider and provider.bills_per_token)
+
+
+#: How many times its even share of a run's prompt budget an unsolved trial has
+#: to eat before it is called out, as a multiple of 1/n.
+#:
+#: Found by reading a claude-code run that scored 0.24 and asking where its 96.5M
+#: input tokens went. One task -- build-pov-ray -- made 1,471 model calls for
+#: 48.4M of them, half the entire run, and scored 0. It raised no exception and
+#: hit no timeout the run reported; it simply looped until the agent clock ran
+#: out, and nothing on screen distinguished it from a task that was merely hard.
+#:
+#: A share of the run rather than a multiple of its median, because prompt spend
+#: across a dataset is wildly skewed and 10x the median is ordinary: on the runs
+#: here that rule fired 24 times across 13 runs, which is a list rather than a
+#: signal. A share is also scale-free -- 5/n is 20% of a 25-task run and 5.6% of
+#: an 89-task one, and both mean the same thing. At 5 this fires 11 times across
+#: the same 13 runs, and every one of them is a number worth looking at.
+#:
+#: Only unsolved trials qualify. A task that costs five times its share and
+#: *succeeds* is expensive, not runaway, and the per-solve token figures already
+#: say so.
+RUNAWAY_SHARE_MULTIPLE = 5.0
+
+
+def _runaways(scored: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Unsolved trials that ate a disproportionate share of the run's prompt spend.
+
+    Measured on prompt tokens rather than on model calls: every harness reports
+    tokens, only some convert a trajectory Harbor can count calls from, and a
+    signal that exists for four harnesses out of nine is not one a comparison
+    can use.
+    """
+    spends = [
+        t["n_input_tokens"]
+        for t in scored
+        if isinstance(t.get("n_input_tokens"), (int, float)) and t["n_input_tokens"]
+    ]
+    # Below a handful of trials, "a disproportionate share" is not a finding --
+    # with four tasks one of them holding a third of the budget is arithmetic.
+    total = sum(spends)
+    if len(spends) < 5 or not total:
+        return []
+    threshold = total * RUNAWAY_SHARE_MULTIPLE / len(spends)
+    out = []
+    for trial in scored:
+        spend = trial.get("n_input_tokens")
+        if trial.get("resolved") or not isinstance(spend, (int, float)):
+            continue
+        if spend >= threshold:
+            out.append(
+                {
+                    "task_name": trial["task_name"],
+                    "n_input_tokens": spend,
+                    "share": spend / total,
+                }
+            )
+    return sorted(out, key=lambda t: -t["n_input_tokens"])
 
 
 def _wall_clock(
@@ -547,6 +809,12 @@ def load_run(job_dir: Path) -> dict[str, Any] | None:
     manifest = _read_json(job_dir / MANIFEST_NAME) or {}
     job_result = _read_json(job_dir / "result.json")
 
+    # Whether a dollar figure means anything for this run's endpoint. A run
+    # recorded before providers carried the flag has no provider in its
+    # manifest; those predate the local-only setup and are left as they were.
+    provider_id = (manifest.get("model") or {}).get("provider")
+    bills_per_token = _provider_bills(provider_id)
+
     # Agent time being spent right now, in trials that have not written a
     # result.json yet. Read from the filesystem rather than from Harbor's
     # record, because the record does not exist until the trial ends -- see
@@ -562,7 +830,9 @@ def load_run(job_dir: Path) -> dict[str, Any] | None:
             if started:
                 live_agent_s += max(0.0, time.time() - started)
         if result:
-            trials.append(normalize_trial(result, trial_dir))
+            trials.append(
+                normalize_trial(result, trial_dir, bills_per_token=bills_per_token)
+            )
 
     # A job with neither a manifest nor any trials is not ours (or not started).
     if not manifest and not trials and not job_result:
@@ -719,7 +989,23 @@ def load_run(job_dir: Path) -> dict[str, Any] | None:
         # Absent on runs recorded before the effort was resolved per endpoint.
         "reasoning_effort": manifest.get("reasoning_effort"),
         "reasoning_effort_source": manifest.get("reasoning_effort_source"),
+        # Whether the effort above was handed to this harness at all, or is
+        # merely what the sweep resolved while the harness used its own
+        # default. Null on runs recorded before the two were told apart.
+        "reasoning_effort_applied": manifest.get("reasoning_effort_applied"),
         "agent_max_tokens": manifest.get("agent_max_tokens"),
+        # Whether that ceiling was actually handed to this harness. Null on runs
+        # recorded before the distinction existed; "applied" when the harness
+        # consumes {max_tokens}; "harness has no output cap" when it does not.
+        #
+        # The manifest used to record the rig's ceiling for every harness
+        # regardless, which made it a claim rather than a record. Codex takes no
+        # output cap -- codex-cli 0.147.0's ConfigToml has 96 keys and none of
+        # them is one -- so a codex run stamped "16,384 output tokens" beside a
+        # claude-code run that really was clamped there, while a measured codex
+        # completion ran to 92,436. Two harnesses tied at 0.68 on that run and
+        # only one of them was capped.
+        "agent_max_tokens_source": manifest.get("agent_max_tokens_source"),
         "debug_capture": bool(manifest.get("debug_capture")),
         "n_attempts": manifest.get("n_attempts"),
         # True when the run was restricted to a subset of the dataset. Such a run
@@ -762,6 +1048,23 @@ def load_run(job_dir: Path) -> dict[str, Any] | None:
         # How many trials the per-trial mean is actually over. It is not always
         # n_done: a harness can finish a trial without reporting usage for it.
         "n_token_samples": len(all_output),
+        # Trials whose tokens had to be recovered from the harness's own log
+        # because Harbor recorded none. Non-zero means Harbor's own collection
+        # failed somewhere -- on Windows, almost always a path over 260
+        # characters -- and the run is worth looking at, not just its numbers.
+        "n_tokens_recovered": sum(
+            1 for t in tasks if t.get("tokens_source") == "agent trace"
+        ),
+        # How many trials ended because one completion reached the output
+        # ceiling rather than because the harness finished. A run with several
+        # of these is not measuring the harness, it is measuring the cap: on the
+        # run that produced this check, all 8 such trials scored 0 while the
+        # other 17 averaged 0.765.
+        "n_output_cap": sum(1 for t in scored if t.get("hit_output_cap")),
+        # Unsolved trials that ate a disproportionate share of the run's prompt
+        # budget -- see _runaways. Reported rather than acted on: a runaway is
+        # a real result, and the run's score already counts it as a failure.
+        "runaways": _runaways(scored),
         "median_duration_s": statistics.median(durations) if durations else None,
         "n_checks_total": n_checks_total,
         "n_checks_passed": n_checks_passed,

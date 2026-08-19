@@ -404,6 +404,89 @@ check("None is safe", salient_error(None), None)
 check("colour is stripped", salient_error("\x1b[31mboom\x1b[0m"), "boom")
 
 
+
+# ---------------------------------------------------------------------------
+# A tool result that is an image, which Codex sends and some servers refuse
+# ---------------------------------------------------------------------------
+
+print("\n-- image tool output --")
+
+# The measured failure, from run codex__qwen3-8-27b...__20260818T010700Z. Codex
+# answered its own view_image call with a function_call_output whose content was
+# an input_image; llama.cpp refused the request outright. It cost exactly the two
+# tasks that show the model a picture -- code-from-image died four seconds in
+# having produced 45 output tokens, and financial-document-processor died the
+# moment it decided to check an invoice total by eye.
+LLAMA_CPP_IMAGE_400 = (
+    '{"error":{"code":400,"message":"Output of tool call should be '
+    '\'Input text\'","type":"invalid_request_error"}}'
+)
+
+check_true("the refusal this rig actually saw is recognised",
+           wireshape._recognised(wireshape.IMAGE_TOOL_OUTPUT, LLAMA_CPP_IMAGE_400))
+check_true("...and an unrelated refusal is not",
+           not wireshape._recognised(wireshape.IMAGE_TOOL_OUTPUT,
+                                     "model not found"))
+# The other module-level rule: a shape must not match another shape's refusal.
+check_true("the two shapes do not answer for each other",
+           not wireshape._recognised(wireshape.SYSTEM_NOT_FIRST,
+                                     LLAMA_CPP_IMAGE_400))
+
+# Which harnesses are asked is read off the catalog, never listed here.
+check_true("a Responses-API harness is asked about it",
+           wireshape.responses_shaped(
+               {"agent_kwargs": {"wire_api": "responses"}}))
+check_true("...and a chat-API one is not",
+           not wireshape.responses_shaped({"agent_kwargs": {"wire_api": "chat"}}))
+check_true("...and a harness with no wire_api at all is not",
+           not wireshape.responses_shaped({"agent_kwargs": {"base_url": "x"}}))
+check_true("...nor is a non-dict spec", not wireshape.responses_shaped(None))
+
+# Control and question differ in exactly the property under test.
+_control, _question = wireshape.IMAGE_TOOL_OUTPUT.bodies("a-model")
+check("the control returns the tool's output as text",
+      _control["input"][-1]["output"], "a screenshot of some code")
+check("the question returns it as an image",
+      _question["input"][-1]["output"][0]["type"], "input_image")
+check_true("...and nothing else about the two requests differs",
+           _control["input"][:-1] == _question["input"][:-1]
+           and _control["tools"] == _question["tools"])
+check_true("both ask for the smallest generation the wire allows",
+           _control["max_output_tokens"] == _question["max_output_tokens"] <= 16)
+
+# Codex posts to <base_url>/responses and owns none of the path above it --
+# the opposite of what the Anthropic client needs from the same endpoint.
+check("the version segment is kept, not stripped",
+      wireshape.responses_url("http://h:8002/v1"), "http://h:8002/v1/responses")
+check("...and supplied when the endpoint is served at a bare host",
+      wireshape.responses_url("http://h:8002"), "http://h:8002/v1/responses")
+check("the shape is posted to the Responses route, not to Messages",
+      wireshape.IMAGE_TOOL_OUTPUT.url("http://h:8002/v1"),
+      "http://h:8002/v1/responses")
+check("...while the system-message shape still goes to Messages",
+      wireshape.SYSTEM_NOT_FIRST.url("http://h:8002/v1"),
+      "http://h:8002/v1/messages")
+
+# The distinction that decides what a refusal costs. A refused system-message
+# position fails every request, so dropping the harness saves hours. A refused
+# image tool result cost the measured run two trials out of twenty-five and it
+# scored 0.68 on the rest -- dropping codex over that would throw away a usable
+# result to avoid two known-bad trials.
+check("a shape that breaks every request is fatal",
+      wireshape.SYSTEM_NOT_FIRST.fatal, True)
+check("a shape that only costs some tasks is not",
+      wireshape.IMAGE_TOOL_OUTPUT.fatal, False)
+_v = wireshape.Verdict(shape=wireshape.IMAGE_TOOL_OUTPUT,
+                       result=wireshape.REJECTED, harnesses=["codex"])
+check("...so a recognised refusal of it does not stop the harness",
+      _v.blocks, False)
+check("...and it is not in the blocked set", wireshape.blocked_harnesses([_v]), {})
+_fatal = wireshape.Verdict(shape=wireshape.SYSTEM_NOT_FIRST,
+                           result=wireshape.REJECTED, harnesses=["claude-code"])
+check("a fatal refusal still blocks",
+      sorted(wireshape.blocked_harnesses([_fatal])), ["claude-code"])
+
+
 print()
 if failures:
     print(f"{len(failures)} FAILED: {', '.join(failures)}")

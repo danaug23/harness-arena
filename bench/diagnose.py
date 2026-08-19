@@ -593,6 +593,30 @@ def check_wire_shapes(config: Config, identity: Any) -> Finding | None:
             docs="docs/TROUBLESHOOTING.md",
         )
 
+    # Recognised refusals that cost a harness some tasks rather than all of
+    # them -- see WireShape.fatal. These do not stop a run, so they are not a
+    # failure, but they are the reason a handful of trials will score zero for
+    # something the model never got a chance to attempt. Reported at warn so
+    # that reason is on record before the run rather than after it.
+    partial = [v for v in verdicts if v.result == wireshape.REJECTED and not v.blocks]
+    if partial:
+        first = partial[0]
+        names = sorted({h for v in partial for h in v.harnesses})
+        return Finding(
+            id="wire-shapes",
+            title=(
+                f"This endpoint refuses a request shape {', '.join(names)} "
+                f"sends on some tasks"
+            ),
+            severity="warn",
+            detail=(
+                f"{first.shape.detail} The endpoint answered HTTP "
+                f"{first.status}: {first.message}"
+            ),
+            fixes=list(first.shape.fixes),
+            docs="docs/TROUBLESHOOTING.md",
+        )
+
     unknown = [v for v in verdicts if v.result == wireshape.UNKNOWN]
     if unknown:
         return Finding(

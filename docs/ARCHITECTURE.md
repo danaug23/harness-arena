@@ -515,7 +515,15 @@ totals by 18x without erroring. See [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
   // not the same experiment, and a fallback window is a weaker claim than a
   // detected one, so both travel with the result.
   "context_window": 65536, "context_window_source": "configured",
-  "agent_max_tokens": 8192,
+  // The output ceiling this harness actually ran under, and whether it reached
+  // it at all: "applied" | "harness has no output cap". Null for the second,
+  // because not every harness has a knob to take one -- codex-cli 0.147.0's
+  // ConfigToml carries 96 keys and none of them caps a completion. Recording
+  // the rig's number regardless made this a claim rather than a record, and a
+  // 16K-capped run sat beside an uncapped one looking like the same
+  // experiment: Claude Code's largest completion on that sweep was exactly
+  // 16,384 and Codex's was 92,436, and the two tied at 0.68.
+  "agent_max_tokens": 8192, "agent_max_tokens_source": "applied",
   // Same idea for the reasoning effort harnesses that send one were given:
   // "configured" | "probed" | "fallback". Probed because a server can refuse
   // an effort outright, and a run that reasoned is not comparable to one that

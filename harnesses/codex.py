@@ -39,6 +39,23 @@ codex-cli 0.147.0 rather than read:
 
 Note that ``-c`` overrides are additive to config.toml rather than a
 replacement for it, so Harbor's own MCP and auth setup still applies.
+
+**Codex cannot be given an output cap, and that is not an omission here.**
+Every other harness in the catalog takes ``{max_tokens}``; this one has nowhere
+to put it. codex-cli 0.147.0's ``ConfigToml`` carries 96 keys -- among them
+``model_context_window``, ``model_auto_compact_token_limit``,
+``model_reasoning_effort`` and ``tool_output_token_limit`` -- and none of them
+caps a single completion. ``model_max_output_tokens`` does not appear in the
+binary at all. Measured by reading the shipped executable, the same way the
+three details above were measured.
+
+That matters for comparison rather than for correctness. On the 20260817 sweep
+Claude Code was clamped at 16,384 output tokens and its largest completion was
+exactly 16,384; Codex, uncapped, produced one of 92,436. The two harnesses tied
+at 0.68 and were not running the same experiment. Nothing here can fix that --
+the knob does not exist -- so the rig records which harnesses were capped
+instead of assuming all of them were: see ``bench.runner.output_cap_for``, and
+``agent_max_tokens_source`` in the manifest.
 """
 
 from __future__ import annotations

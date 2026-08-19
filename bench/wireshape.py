@@ -100,6 +100,20 @@ def messages_url(base_url: str) -> str:
     return f"{base_url_root(base_url)}/v1/messages"
 
 
+def responses_url(base_url: str) -> str:
+    """Where a Responses-API client posts, given a configured base URL.
+
+    The version segment is kept, not stripped -- Codex posts to
+    ``<base_url>/responses`` and owns none of the path above it. A base URL
+    served at a bare host:port gets ``/v1`` supplied, because that is the route
+    every OpenAI-compatible server exposes it at.
+    """
+    stripped = (base_url or "").strip().rstrip("/")
+    if not _VERSION_SUFFIX.search(stripped):
+        stripped = f"{stripped}/v1"
+    return f"{stripped}/responses"
+
+
 # ---------------------------------------------------------------------------
 # Which harnesses speak which wire
 # ---------------------------------------------------------------------------
@@ -119,6 +133,19 @@ def anthropic_shaped(spec: dict[str, Any]) -> bool:
         if isinstance(env, dict) and _ANTHROPIC_ROUTING_VAR in env:
             return True
     return False
+
+
+def responses_shaped(spec: dict[str, Any]) -> bool:
+    """Whether this catalog entry talks the Responses API to us.
+
+    Read off `wire_api`, which is the field that decides it -- the same rule
+    `anthropic_shaped` uses: ask the catalog what the harness is, rather than
+    keeping a list of harness ids here that a new entry would not be on.
+    """
+    if not isinstance(spec, dict):
+        return False
+    kwargs = spec.get("agent_kwargs")
+    return isinstance(kwargs, dict) and kwargs.get("wire_api") == "responses"
 
 
 # ---------------------------------------------------------------------------
@@ -144,9 +171,25 @@ class WireShape:
     #: module docstring.
     rejection: tuple[tuple[str, ...], ...]
     fixes: tuple[str, ...]
+    #: Whether a refusal of this shape makes the harness unrunnable, or merely
+    #: costs it some tasks. The distinction is the difference between two very
+    #: different pieces of advice.
+    #:
+    #: A refused system-message position fails *every* request, so the run is
+    #: 25 identical first-call failures and dropping the harness saves hours. A
+    #: refused image tool result fails only the tasks that show the model a
+    #: picture: the measured Codex run lost exactly two trials to it and scored
+    #: 0.68 on the other twenty-three. Dropping that harness would throw away a
+    #: usable result to avoid two known-bad trials, so this one is reported and
+    #: the run proceeds.
+    fatal: bool = True
 
     def bodies(self, model: str) -> tuple[dict[str, Any], dict[str, Any]]:
         raise NotImplementedError  # pragma: no cover - overridden per shape
+
+    def url(self, base_url: str) -> str:
+        """Where this shape is sent. Messages API unless a shape says otherwise."""
+        return messages_url(base_url)
 
 
 @dataclass(frozen=True)
@@ -209,10 +252,135 @@ SYSTEM_NOT_FIRST = _SystemNotFirst(
     ),
 )
 
+#: A 1x1 transparent PNG. The smallest image that is a real image: the question
+#: is whether the *shape* is accepted, and a server that rejects it will reject
+#: it at any size, while a benchmark machine has better uses for the bytes.
+_TINY_PNG = (
+    "data:image/png;base64,"
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk"
+    "YPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
+)
+
+
+@dataclass(frozen=True)
+class _ImageToolOutput(WireShape):
+    """A tool result whose content is an image rather than text.
+
+    Codex returns one whenever the model calls `view_image`, which it does on
+    any task that puts a picture in front of it. The Responses API allows a
+    `function_call_output` whose `output` is a content array whose parts may be
+    `input_image`; several OpenAI-compatible servers implement only the string
+    form and reject the array outright.
+
+    Control and question differ in exactly that: same request, same tool call,
+    same everything -- one returns the tool's output as text, the other returns
+    it as an image.
+    """
+
+    def url(self, base_url: str) -> str:
+        return responses_url(base_url)
+
+    def bodies(self, model: str) -> tuple[dict[str, Any], dict[str, Any]]:
+        call_id = "call_harness_arena_probe"
+        tools = [
+            {
+                "type": "function",
+                "name": "view_image",
+                "description": "Return an image from disk.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"path": {"type": "string"}},
+                    "required": ["path"],
+                },
+            }
+        ]
+        base: dict[str, Any] = {
+            "model": model,
+            # As small a generation as the wire allows: this asks whether the
+            # *input* is accepted, and answering it costs a slot on a machine
+            # that is usually about to start a benchmark.
+            "max_output_tokens": 16,
+            "tools": tools,
+        }
+        history: list[dict[str, Any]] = [
+            {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "What is in the image?"}],
+            },
+            {
+                "type": "function_call",
+                "name": "view_image",
+                "arguments": '{"path":"/app/code.png"}',
+                "call_id": call_id,
+            },
+        ]
+        control = {
+            **base,
+            "input": [
+                *history,
+                {
+                    "type": "function_call_output",
+                    "call_id": call_id,
+                    "output": "a screenshot of some code",
+                },
+            ],
+        }
+        question = {
+            **base,
+            "input": [
+                *history,
+                {
+                    "type": "function_call_output",
+                    "call_id": call_id,
+                    "output": [{"type": "input_image", "image_url": _TINY_PNG}],
+                },
+            ],
+        }
+        return control, question
+
+
+IMAGE_TOOL_OUTPUT = _ImageToolOutput(
+    id="image-tool-output",
+    title="A tool result that is an image, not text",
+    detail=(
+        "Codex answers its own view_image tool with a function_call_output "
+        "whose content is an input_image. An endpoint that cannot take image "
+        "content -- usually one with no multimodal projector loaded -- refuses "
+        "the request outright, so the trial dies on the first task that shows "
+        "the model a picture. Only those tasks, which is why it reads as a "
+        "task failure rather than as an endpoint the harness cannot use. "
+        "Claude Code reaches the same wall by a different route, reporting "
+        "'image input is not supported'; see docs/TROUBLESHOOTING.md."
+    ),
+    rejection=(
+        ("output of tool call should be", "input text"),
+        ("function_call_output", "not supported"),
+        ("input_image", "not supported"),
+        ("tool", "output", "must be a string"),
+    ),
+    fixes=(
+        "Usually the endpoint has no multimodal projector loaded. Restart "
+        "llama-server with --mmproj <projector.gguf> if the model has one.",
+        "Otherwise the vision tasks are unavailable on this endpoint. Read "
+        "those cells as 'not attempted' rather than 'failed' -- and note that "
+        "a harness which solves such a task without looking at the image "
+        "still scores, so the column is not uniformly blank and the gap is "
+        "easy to misread as a harness difference.",
+        "The rest of the run is unaffected: this refusal only fires on a task "
+        "that puts an image in front of the model. On Terminal-Bench 2 those "
+        "are code-from-image and financial-document-processor.",
+    ),
+    fatal=False,
+)
+
 #: Every shape this rig knows how to ask about, with the harnesses it applies
 #: to. Keyed by the predicate rather than by harness id so the catalog stays
 #: the source of truth about what a harness is.
-SHAPES: tuple[tuple[WireShape, Any], ...] = ((SYSTEM_NOT_FIRST, anthropic_shaped),)
+SHAPES: tuple[tuple[WireShape, Any], ...] = (
+    (SYSTEM_NOT_FIRST, anthropic_shaped),
+    (IMAGE_TOOL_OUTPUT, responses_shaped),
+)
 
 
 # ---------------------------------------------------------------------------
@@ -245,7 +413,13 @@ class Verdict:
 
     @property
     def blocks(self) -> bool:
-        return self.result == REJECTED
+        """Whether this verdict should stop the harness from running.
+
+        A recognised refusal of a non-fatal shape is still a real finding and
+        is still printed -- it just costs the harness some tasks rather than
+        all of them. See WireShape.fatal.
+        """
+        return self.result == REJECTED and self.shape.fatal
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -316,7 +490,7 @@ def probe_shape(
         verdict.why = "the endpoint could not be asked which model it serves"
         return verdict
 
-    url = messages_url(endpoint.resolved_base_url())
+    url = shape.url(endpoint.resolved_base_url())
     api_key = endpoint.resolve_api_key()
     control, question = shape.bodies(served_id)
 

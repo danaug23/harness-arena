@@ -920,6 +920,140 @@ _, _merged = build_command(
 check("the harness wins a collision", _merged.get("SHARED"), "harness")
 
 
+
+# ---------------------------------------------------------------------------
+# The ceiling a harness is actually given, versus the one the rig computed
+# ---------------------------------------------------------------------------
+
+print("\n-- output caps --")
+
+import os  # noqa: E402
+
+from bench.runner import (  # noqa: E402
+    CAP_APPLIED,
+    NO_OUTPUT_CAP,
+    WINDOWS_MAX_PATH,
+    check_path_budget,
+    output_cap_for,
+    path_budget,
+    report_output_caps,
+    warn_reasoning_under_cap,
+)
+
+_cat = _catalog["harnesses"]
+
+# Every harness gets handed the same number; not every harness has a knob for
+# it. Recording the number regardless made the manifest a claim rather than a
+# record, and that is how a 16K-capped run and an uncapped one came to be
+# compared as though they were the same experiment.
+check("a harness that takes the cap records it",
+      output_cap_for(_cat["claude-code"], 131072), (16384, CAP_APPLIED))
+# codex-cli 0.147.0's ConfigToml has 96 keys and none of them caps a
+# completion; model_max_output_tokens does not appear in the binary at all.
+# Measured against the shipped executable, not read from the docs.
+check("codex is recorded as uncapped, not as capped at the rig's number",
+      output_cap_for(_cat["codex"], 131072), (None, NO_OUTPUT_CAP))
+check("...and the ceiling itself is unchanged for everyone else",
+      output_cap_for(_cat["dsh"], 131072)[0], 16384)
+check("an empty block cannot silently claim a cap",
+      output_cap_for({}, 131072), (None, NO_OUTPUT_CAP))
+
+check("a sweep says which of its harnesses it cannot cap",
+      report_output_caps(_catalog, ["claude-code", "codex", "dsh"], 131072),
+      ["codex"])
+check("...and says nothing when they are all capped",
+      report_output_caps(_catalog, ["claude-code", "dsh"], 131072), [])
+
+
+# ---------------------------------------------------------------------------
+# Reasoning and the cap spend the same budget
+# ---------------------------------------------------------------------------
+
+print("\n-- reasoning under a cap --")
+
+# The DeepSeek Harness ran at high effort under a 16,384-token ceiling on
+# 2026-08-18 and lost 8 of 25 trials to it -- every one scoring zero, three
+# without ever emitting a tool call. Reasoning tokens count against max_tokens,
+# so the two settings are spending the same budget.
+_reasons_and_capped = {"agent_kwargs": {"max_tokens": "{max_tokens}",
+                                        "reasoning_effort": "{reasoning_effort}"}}
+check_true("a harness that reasons under a cap is warned about",
+           warn_reasoning_under_cap("x", _reasons_and_capped, 131072, "high"))
+# Codex is here: uncapped, so the effort has nothing to collide with.
+check("an uncapped harness is not warned about",
+      warn_reasoning_under_cap("codex", _cat["codex"], 131072, "high"), False)
+check("a capped harness that does not reason is not warned about",
+      warn_reasoning_under_cap("cc", _cat["claude-code"], 131072, "high"), False)
+check("no effort, no warning",
+      warn_reasoning_under_cap("x", _reasons_and_capped, 131072, "none"), False)
+
+# Every harness with a knob is told the *same* effort, and the warning fires
+# for the ones that are also capped. Removing the placeholder from a block
+# would not make that harness reason less -- it would make it fall back to its
+# own default, unrecorded, which is strictly worse than a value the manifest
+# can state. The lever for the collision is the effort value, which is one
+# number for the whole sweep and so keeps the harnesses comparable.
+check("dsh is told the same effort as codex, not left to its own default",
+      uses_placeholder(_cat["dsh"], "reasoning_effort"), True)
+check_true("...and is warned about, because it is capped as well",
+           warn_reasoning_under_cap("dsh", _cat["dsh"], 131072, "high"))
+
+
+# ---------------------------------------------------------------------------
+# Windows stops at 260 characters, on files it has just written itself
+# ---------------------------------------------------------------------------
+
+print("\n-- path budget --")
+
+# Measured off the runs on disk: the deepest artifact each harness writes below
+# a trial directory. Codex is the one that has already cost something -- two
+# rollout paths at 260 and 264 characters, both unopenable, both trials
+# recording no tokens at all.
+_jobs = Path("C:/x")
+_total, _which = path_budget(_jobs, "j", ["short", "a-much-longer-task-name"], "codex")
+check("the longest task name is the one that decides it",
+      _which, "a-much-longer-task-name")
+check_true("...and a deep-session harness is budgeted deeper than a shallow one",
+           path_budget(_jobs, "j", ["t"], "claude-code")[0]
+           > path_budget(_jobs, "j", ["t"], "hermes")[0])
+check_true("a harness nobody has profiled is not assumed to be cheap",
+           path_budget(_jobs, "j", ["t"], "never-seen-before")[0]
+           > path_budget(_jobs, "j", ["t"], "x")[0] - 1)
+
+# The run that actually lost its tokens, reconstructed at the length it had.
+#
+# Built from the platform's own filesystem root rather than written out, for two
+# reasons: path_budget resolves what it is given, so a Windows-shaped literal
+# would pick up the working directory on Linux and measure something else
+# entirely; and the real path is somebody's home directory, which is not a fact
+# this repository needs to carry. Only its length matters, and that is stated.
+_ROOT = Path(os.path.abspath(os.sep))
+# 40 characters, the runs directory on the machine where this was found.
+_real_jobs = _ROOT / ("d" * (40 - len(str(_ROOT))))
+check("the reconstruction is the length being claimed",
+      len(str(_real_jobs.resolve())), 40)
+
+_real_name = ("codex__qwen3-8-27b-q4-k-m-q4-k-medium-96a0f273__tb2"
+              "__stratified-25__20260818T010700Z")
+_measured, _ = path_budget(_real_jobs, _real_name,
+                           ["llm-inference-batching-scheduler"], "codex")
+# Harbor could not open that rollout, and reported FileNotFoundError on a file
+# that was sitting right there. The path was 264 characters; so is this.
+check("the budget reproduces the path that actually broke", _measured, 264)
+check_true("...which is over the limit", _measured >= WINDOWS_MAX_PATH)
+
+# The warning itself only exists where the limit is enforced and long paths are
+# off, so its content is checked only when the platform produced one.
+_warning = check_path_budget(_real_jobs, _real_name,
+                             ["llm-inference-batching-scheduler"], "codex")
+if _warning is not None:
+    check_true("...and the warning names the task that reaches it",
+               "llm-inference-batching-scheduler" in _warning)
+    check_true("...and says how to fix it", "LongPathsEnabled" in _warning)
+check("a short path says nothing",
+      check_path_budget(_ROOT / "r", "j", ["t"], "hermes"), None)
+
+
 print()
 if failures:
     print(f"{len(failures)} FAILED: {', '.join(failures)}")

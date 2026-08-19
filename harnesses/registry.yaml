@@ -62,6 +62,38 @@
 # same small local model is NOT comparable to a published tau3-bench score,
 # where both are frontier models; the manifest records what they were.
 #
+# `{max_tokens}` is the rig's output ceiling, and not every harness has a knob
+# to take it. Codex is the one that does not: codex-cli 0.147.0's ConfigToml
+# carries 96 keys -- `model_context_window`, `model_auto_compact_token_limit`,
+# `tool_output_token_limit` among them -- and none of them caps a completion.
+# Checked against the shipped binary, like everything else about Codex here.
+#
+# A harness that takes no cap runs uncapped, and that is worth knowing rather
+# than papering over: on the 20260817 sweep Claude Code's largest completion was
+# exactly 16,384 and Codex's was 92,436, and the two tied at 0.68. The manifest
+# now records the ceiling only for the harnesses that were actually given one
+# (see bench.runner.output_cap_for), and `bench` says so before it starts.
+#
+# `{reasoning_effort}` is offered to every harness and only some can take it.
+# Measured on the current catalog: codex and dsh have a knob, omp has one this
+# file does not yet fill (`--thinking`, whose vocabulary differs), and
+# claude-code, hermes, minion, dmfa-minion and opencode have none at all. The
+# model reasons either way -- it is a reasoning model -- so a harness that is
+# told nothing is not a harness that does not think, it is one whose effort
+# nobody recorded. The manifest now says per run whether the effort reached the
+# harness (`reasoning_effort_applied`), because "told high" and "used its own
+# default" are different experiments and used to render identically.
+#
+# Pairing it with `{max_tokens}` is the combination to think twice about:
+# reasoning tokens are billed against the output cap, so a high effort can spend
+# the whole budget before the model emits a tool call. The DeepSeek Harness ran
+# that way on 2026-08-18 and lost 8 of 25 trials to it -- every one scoring zero,
+# three without a single tool call, while the other 17 averaged 0.765. The lever
+# for that is the effort *value*, which is one number for the whole sweep and so
+# keeps the harnesses comparable; removing the placeholder from one block would
+# only hide what that harness then did by default. `bench` warns when a block
+# asks for both.
+#
 # Comments below this line do not survive an edit made from the dashboard:
 # that path rewrites the file from parsed YAML and re-emits only this header.
 

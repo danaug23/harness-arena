@@ -1647,6 +1647,28 @@ function renderLeaderboard(runs) {
                one, and the checks are not equally hard.</div>`
             : "",
           r.n_errors ? `<div class="t-r">errored <b>${r.n_errors}</b></div>` : "",
+          // A trial that stopped on the output ceiling scores zero and looks
+          // exactly like a wrong answer. On the run that produced this check,
+          // all eight of them scored zero while the other seventeen averaged
+          // 0.765 -- so the headline was measuring the cap, not the harness.
+          r.n_output_cap
+            ? `<div class="t-r warn-line">hit the output cap <b>${r.n_output_cap}</b>
+               — stopped mid-task because one response reached the ceiling, not
+               because the harness was done</div>`
+            : "",
+          // Harbor recorded no usage and the number was read back out of the
+          // harness's own log. Non-zero means collection failed somewhere.
+          r.n_tokens_recovered
+            ? `<div class="t-r warn-line">tokens recovered from the agent log for
+               <b>${r.n_tokens_recovered}</b> — Harbor recorded none, usually a
+               path past Windows' 260-character limit</div>`
+            : "",
+          (r.runaways || []).length
+            ? `<div class="t-r warn-line">runaway spend:
+               ${r.runaways.map((w) => `<b>${esc(w.task_name)}</b> took
+                 ${(w.share * 100).toFixed(0)}% of this run's prompt tokens and
+                 still failed`).join("; ")}</div>`
+            : "",
           // Never silent: a denominator that shrank without saying so is the
           // one way this panel could mislead about the experiment itself.
           r.n_unscored
@@ -1673,7 +1695,14 @@ function renderLeaderboard(runs) {
             ? `<div class="t-r${r.context_window_source === "fallback" ? " warn-line" : ""}">
                harnesses told the window is
                <b>${(r.context_window / 1024).toFixed(0)}K</b>
-               (${int(r.context_window)}), max <b>${int(r.agent_max_tokens)}</b> out${
+               (${int(r.context_window)}), ${
+                 // A cap this harness never received is not a cap. Codex takes
+                 // no max-tokens setting at all, and recording the rig's
+                 // ceiling for it anyway is how an uncapped run came to sit
+                 // beside a capped one looking like the same experiment.
+                 r.agent_max_tokens == null && r.agent_max_tokens_source
+                   ? `<b>no output cap</b> (${esc(r.agent_max_tokens_source)})`
+                   : `max <b>${int(r.agent_max_tokens)}</b> out`}${
                  // "4K, detected" and "4K, because nothing knew" are not the
                  // same claim about a run. Only the second is a warning.
                  r.context_window_source === "fallback"
@@ -1687,7 +1716,19 @@ function renderLeaderboard(runs) {
           // Only shown when it is not the harness default: a run that was told
           // not to think is a different experiment from one that was, and the
           // rest of this panel would describe the two identically.
-          r.reasoning_effort && r.reasoning_effort !== "high"
+          // Shown whenever this harness could not be told, at any value: an
+          // effort the harness never received is not a property of the run, and
+          // "told high" used to render identically to "used its own default".
+          // The model reasons either way, so the second is not "no thinking",
+          // it is thinking nobody recorded.
+          r.reasoning_effort_applied === false
+            ? `<div class="t-r warn-line">this harness takes no reasoning
+               effort — the sweep resolved
+               <b>${esc(r.reasoning_effort || "?")}</b>, and the harness used
+               its own default instead</div>`
+            : "",
+          r.reasoning_effort_applied !== false
+            && r.reasoning_effort && r.reasoning_effort !== "high"
             ? `<div class="t-r">reasoning effort <b>${esc(r.reasoning_effort)}</b>${
                  r.reasoning_effort_source
                    ? ` (${esc(r.reasoning_effort_source)})`

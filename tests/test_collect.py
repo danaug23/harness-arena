@@ -132,6 +132,175 @@ def test_model_summary_reports_the_window_that_was_used() -> None:
           models_of([old, new])[0]["context_window"], 32768)
 
 
+
+def test_a_harness_that_stops_on_its_own_output_cap_is_not_a_clean_trial(tmp: Path) -> None:
+    """A run that self-terminated on max_tokens must not read as clean trials.
+
+    Harbor's Claude Code adapter raises OutputTokenExceededError for this, so the
+    trial carries an exception and counts as an error. The DeepSeek Harness writes
+    a turn/end whose reason is max-tokens, exits, and records no exception at all
+    -- so the same event arrived as a completed trial with a reward of zero,
+    indistinguishable from an honest wrong answer. On the run that produced this
+    check, 8 of 25 trials ended that way and every one scored zero, while the
+    other 17 averaged 0.765. The headline was measuring the cap.
+    """
+    job = tmp / "dsh__m__20260818T171816Z"
+    job.mkdir(parents=True)
+    (job / "harness-bench.json").write_text(json.dumps({
+        "harness": "dsh", "harness_label": "DeepSeek Harness",
+        "model": {"label": "M", "fingerprint": "fp1", "provider": "openai-compatible"},
+    }), encoding="utf-8")
+
+    _write_trial(job, "solved-it", resolved=True, tokens=900, suffix="a")
+    # Wrong answer, ordinary. Its trace ends on a normal completion.
+    _write_trial(job, "just-wrong", resolved=False, tokens=800, suffix="b",
+                 log='{"type":"turn/end","data":{"turn":1,'
+                     '"reason":{"kind":"completed"}}}\n')
+    # Same reward, entirely different event: the harness stopped itself.
+    _write_trial(job, "ran-out-of-output", resolved=False, tokens=16384, suffix="c",
+                 log='{"type":"step/end","data":{"turn":1,"step":1}}\n'
+                     '{"type":"turn/end","data":{"turn":1,'
+                     '"reason":{"kind":"max-tokens"}}}\n')
+
+    run = load_run(job)
+    by_task = {t["task_name"]: t for t in run["tasks"]}
+    check("the trial the cap ended is flagged as such",
+          by_task["ran-out-of-output"]["hit_output_cap"], True)
+    check("an ordinary wrong answer is not",
+          by_task["just-wrong"]["hit_output_cap"], False)
+    check("a solved trial is never checked for it",
+          by_task["solved-it"]["hit_output_cap"], False)
+    check("the run counts them where a reader will see them",
+          run["n_output_cap"], 1)
+
+    # Flagged, and deliberately nothing more. The dsh adapter swallows the
+    # non-zero exit for a max-tokens turn precisely so the workspace is scored
+    # rather than discarded ungraded, and a graded result is not an error
+    # anywhere else in this module. Reclassifying it here would undo that on
+    # purpose and put an error glyph on the one outcome that is a real
+    # measurement of what the agent managed before it was cut off.
+    check("...without calling a graded trial an error",
+          by_task["ran-out-of-output"]["error_type"], None)
+    check("...without charging it to the harness as a crash",
+          by_task["ran-out-of-output"]["fault"], None)
+    check("...and without inflating the error count", run["n_errors"], 0)
+    check("...or shrinking the denominator", run["n_done"], 3)
+
+
+def test_tokens_are_recovered_from_the_agent_log_when_harbor_recorded_none(
+    tmp: Path,
+) -> None:
+    """A trial Harbor could not account for is a gap, not a harness spending nothing.
+
+    Measured: two Codex trials in one sweep recorded no tokens at all, because
+    Harbor's trajectory conversion could not open the session rollout -- the path
+    was 260 and 264 characters on a Windows box with long paths off. One of them
+    was a solve worth 2.26M input and 140k output, and the usage was sitting in
+    the harness's own stdout the whole time.
+    """
+    job = tmp / "codex__m__20260818T010700Z"
+    job.mkdir(parents=True)
+    (job / "harness-bench.json").write_text(json.dumps({
+        "harness": "codex", "harness_label": "Codex CLI",
+        "model": {"label": "M", "fingerprint": "fp1", "provider": "openai-compatible"},
+    }), encoding="utf-8")
+
+    _write_trial(job, "reported-normally", resolved=True, tokens=1000, suffix="a")
+    # Harbor recorded nothing; Codex printed its own totals as it always does.
+    _write_trial(job, "harbor-lost-it", resolved=True, tokens=None, suffix="b",
+                 log='{"type":"item.completed","item":{"id":"item_1"}}\n'
+                     '{"type":"turn.completed","usage":{"input_tokens":2255620,'
+                     '"cached_input_tokens":2083198,"output_tokens":140514}}\n')
+
+    run = load_run(job)
+    by_task = {t["task_name"]: t for t in run["tasks"]}
+    got = by_task["harbor-lost-it"]
+    check("the harness's own total is used", got["n_input_tokens"], 2255620)
+    check("...including the output half", got["n_output_tokens"], 140514)
+    check("...and says where it came from", got["tokens_source"], "agent trace")
+    check("a trial Harbor accounted for is untouched",
+          by_task["reported-normally"]["tokens_source"], "harbor")
+    check("the run says how many it had to recover", run["n_tokens_recovered"], 1)
+
+
+def test_a_local_endpoint_is_never_given_a_price(tmp: Path) -> None:
+    """A server you host bills nothing, so a dollar figure beside it is wrong.
+
+    Harbor prices a trial by looking the model *name* up in LiteLLM's table, which
+    cannot tell a local alias from a hosted model. Two measured runs against a free
+    llama.cpp box were recorded at $44.31 and $141.19 -- and only for the two
+    adapters that compute it, so a cost column ranked those two against blanks.
+    """
+    def one(provider: str | None) -> float | None:
+        job = tmp / f"h__m__{provider or 'none'}"
+        job.mkdir(parents=True)
+        model = {"label": "M", "fingerprint": "fp1"}
+        if provider:
+            model["provider"] = provider
+        (job / "harness-bench.json").write_text(json.dumps({
+            "harness": "h", "model": model,
+        }), encoding="utf-8")
+        _write_trial(job, "t", resolved=True, tokens=1000, cost=3.99)
+        return load_run(job)["tasks"][0]["cost_usd"]
+
+    check("a self-hosted endpoint reports no cost", one("openai-compatible"), None)
+    check("a billed provider keeps its cost", one("openrouter"), 3.99)
+    # Every manifest written before providers carried the flag came from the
+    # local-only setup this rig started as. Inventing a price for those is the
+    # failure being fixed, not a conservative default.
+    check("a manifest that does not say is treated as free", one(None), None)
+
+
+def test_a_task_that_ate_the_run_and_failed_is_called_out(tmp: Path) -> None:
+    """One task taking half a run's prompt budget and scoring zero is a finding.
+
+    Measured: a claude-code run scored 0.24, and build-pov-ray took 48.4M of its
+    96.5M input tokens across 1,471 model calls before scoring zero. It raised no
+    exception and hit no timeout the run reported -- it looped until the agent
+    clock ran out, and nothing on screen told it apart from a hard task.
+    """
+    job = tmp / "claude-code__m__20260815T030858Z"
+    job.mkdir(parents=True)
+    (job / "harness-bench.json").write_text(json.dumps({
+        "harness": "claude-code", "model": {"label": "M", "fingerprint": "fp1"},
+    }), encoding="utf-8")
+
+    # A 25-task run, the shape this rig actually produces. Scale matters: the
+    # threshold is a share of an even split, so what counts as disproportionate
+    # depends on how many trials there are to be disproportionate against.
+    for i in range(23):
+        _write_trial(job, f"ordinary-{i:02d}", resolved=i < 12, tokens=1000,
+                     suffix=f"s{i}")
+    # A third of the run's prompt spend, and it failed.
+    _write_trial(job, "looped-forever", resolved=False, tokens=25000, suffix="big")
+    # The same spend, but it worked. Expensive is not runaway, and the
+    # per-solve token figures already say so.
+    _write_trial(job, "expensive-but-solved", resolved=True, tokens=25000, suffix="ok")
+
+    run = load_run(job)
+    names = [w["task_name"] for w in run["runaways"]]
+    check("the task that ate the run and failed is reported",
+          names, ["looped-forever"])
+    check("...with the share that makes it worth reading",
+          round(run["runaways"][0]["share"], 2), 0.34)
+    check("an expensive solve is not a runaway",
+          "expensive-but-solved" in names, False)
+
+
+def test_a_short_run_has_no_runaways(tmp: Path) -> None:
+    """With four tasks, one holding a third of the budget is arithmetic."""
+    job = tmp / "h__m__20260815T030858Z"
+    job.mkdir(parents=True)
+    (job / "harness-bench.json").write_text(json.dumps({
+        "harness": "h", "model": {"label": "M", "fingerprint": "fp1"},
+    }), encoding="utf-8")
+    _write_trial(job, "a", resolved=False, tokens=90000, suffix="a")
+    for i in range(3):
+        _write_trial(job, f"b{i}", resolved=False, tokens=100, suffix=f"b{i}")
+    check("four trials are not enough to call one disproportionate",
+          load_run(job)["runaways"], [])
+
+
 def test_pairing() -> None:
     a = make_run(run_id="a", harness="hermes")
     b = make_run(run_id="b", harness="omp", harness_label="omp")
@@ -522,7 +691,8 @@ def _write_trial(job: Path, task: str, *, resolved: bool, log: str = "",
                  started: str = "2026-08-10T04:00:00Z",
                  finished: str = "2026-08-10T04:03:00Z",
                  agent_s: int = 0, spliced: str = "",
-                 tokens: int | None = None, no_reward: bool = False) -> None:
+                 tokens: int | None = None, no_reward: bool = False,
+                 cost: float | None = None) -> None:
     trial = job / f"{task}__{suffix}"
     (trial / "agent").mkdir(parents=True)
     if checks:
@@ -553,7 +723,7 @@ def _write_trial(job: Path, task: str, *, resolved: bool, log: str = "",
         "n_input_tokens": None if tokens is None else tokens * 4,
         "n_cache_tokens": None,
         "n_output_tokens": tokens,
-        "cost_usd": None,
+        "cost_usd": cost,
     }
     if agent_s:
         result["agent_execution"] = {
@@ -1199,6 +1369,18 @@ if __name__ == "__main__":
     test_feed_renders_unknown_event_shapes()
     test_model_summary_reports_the_window_that_was_used()
     test_prompt_totals_are_repaired_when_input_excludes_cache()
+    with tempfile.TemporaryDirectory() as scratch:
+        test_a_harness_that_stops_on_its_own_output_cap_is_not_a_clean_trial(
+            Path(scratch))
+    with tempfile.TemporaryDirectory() as scratch:
+        test_tokens_are_recovered_from_the_agent_log_when_harbor_recorded_none(
+            Path(scratch))
+    with tempfile.TemporaryDirectory() as scratch:
+        test_a_local_endpoint_is_never_given_a_price(Path(scratch))
+    with tempfile.TemporaryDirectory() as scratch:
+        test_a_task_that_ate_the_run_and_failed_is_called_out(Path(scratch))
+    with tempfile.TemporaryDirectory() as scratch:
+        test_a_short_run_has_no_runaways(Path(scratch))
     test_pairing()
     test_wilson()
     print("\n" + ("FAILED: " + ", ".join(failures) if failures else "all checks passed"))

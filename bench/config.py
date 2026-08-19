@@ -92,6 +92,18 @@ class Provider:
     #: Whether the served model can be discovered rather than configured. A local
     #: server has exactly one model loaded; OpenRouter lists hundreds.
     model_is_discoverable: bool
+    #: Whether tokens spent against this provider cost money. False for a
+    #: server you host: nothing is billed, so a dollar figure beside its result
+    #: is not a small number, it is a wrong one.
+    #:
+    #: Harbor prices a trial by looking the *model name* up in LiteLLM's table,
+    #: which cannot tell "qwen3.8-27b on my own box" from a hosted model of a
+    #: similar name. Two measured runs against a free llama.cpp server were
+    #: recorded at $44.31 and $141.19, and only for the two harnesses whose
+    #: adapters happen to compute it -- so a cost column ranked those two
+    #: against blanks. See bench.collect._token_totals, which drops the figure
+    #: rather than showing it.
+    bills_per_token: bool
 
 
 PROVIDERS: dict[str, Provider] = {
@@ -104,6 +116,7 @@ PROVIDERS: dict[str, Provider] = {
         supports_props=True,
         default_agent_concurrency=1,
         model_is_discoverable=True,
+        bills_per_token=False,
     ),
     "openrouter": Provider(
         id="openrouter",
@@ -114,6 +127,7 @@ PROVIDERS: dict[str, Provider] = {
         supports_props=False,
         default_agent_concurrency=4,
         model_is_discoverable=False,
+        bills_per_token=True,
     ),
 }
 

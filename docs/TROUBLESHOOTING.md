@@ -294,6 +294,13 @@ cells as "not attempted" rather than "failed". Note that harnesses which solve
 such a task *without* looking at the image will still score, so the column is
 not uniformly blank, which makes this easy to misread as a harness difference.
 
+**Caught before the run since 0.1.26.** The wire-shape preflight now asks the
+endpoint whether it accepts a tool result whose content is an image, so this
+is reported at the start of a sweep rather than discovered afterwards in two
+trial logs. It does *not* stop the run: the measured cost was two trials out
+of twenty-five, and codex scored 0.68 on the other twenty-three. Dropping the
+harness would throw away a usable result to avoid two known-bad trials.
+
 ### claude-code: `OutputTokenExceededError`
 
 `API Error: Claude's response exceeded the 16384 output token maximum.`
@@ -311,6 +318,85 @@ ran out of output budget on this task".
 
 Override with `endpoint.context_window` only if you intend to change the ceiling
 for *every* harness, and record that you did.
+
+**Except that it is not every harness.** Codex takes no output cap at all --
+codex-cli 0.147.0's `ConfigToml` has 96 keys and none of them caps a completion
+-- so it runs uncapped while everything else is clamped. A measured Codex
+completion reached 92,436 tokens against Claude Code's hard 16,384. The
+manifest records which harnesses were actually given a ceiling
+(`agent_max_tokens_source`), `bench` names the ones it cannot cap before a
+sweep starts, and the dashboard shows **no output cap** rather than a number
+that was never applied.
+
+### dsh: eight trials scored zero and the run reported no errors
+
+`turn/end {"reason":{"kind":"max-tokens"}}`, and nothing else.
+
+The DeepSeek Harness ends its run when one completion reaches the output
+ceiling. Its adapter deliberately swallows the non-zero exit so the workspace is
+still graded rather than discarded — which is right — but the consequence was
+that the trial then looked exactly like an ordinary wrong answer: reward 0, no
+exception, a "completed" trial in a run reporting 0 errors.
+
+Measured on `dsh__qwen3-8-27b…__20260818T171816Z`: **8 of 25 trials ended this
+way and every one scored 0**, while the other 17 averaged 0.765. Three had
+produced no tool call at all — one prompt in, one 16,384-token reasoning block
+out, dead in ~377 seconds. On those same eight tasks Claude Code and Codex each
+solved five, so this was the harness stopping, not the tasks being hard.
+
+The cause was `reasoning_effort: high` under a 16,384-token cap: reasoning
+tokens count against `max_tokens`, so the two settings were spending one budget.
+`reasoning_effort` has been removed from the dsh catalog block, and `bench` now
+warns whenever a block asks for both.
+
+Runs already on disk are re-read correctly: the collector reads the harness's
+own trace and flags these trials as `hit_output_cap`, the run reports
+`n_output_cap`, and the dashboard says **stopped mid-task because one response
+reached the ceiling**. The reward is left alone — the trial was graded, and a
+graded result is not an error.
+
+### Windows: a trial scores normally and reports no tokens at all
+
+`FileNotFoundError` on a file that is sitting right there:
+
+```
+FileNotFoundError: [Errno 2] No such file or directory:
+'...\codex__qwen3-8-27b-...__20260818T010700Z
+ \llm-inference-batching-scheduler__VCb87aD
+ \agent\sessions\2026\08\18
+ \rollout-2026-08-18T01-07-24-01a01268-a92d-7490-967f-dfd904ac3c2c.jsonl'
+```
+
+That path is 264 characters and **Windows stops at 260** unless long paths are
+enabled machine-wide. Harbor writes the file through one API and reopens it
+through another, so the trial runs, scores, and then loses its token accounting
+when the trajectory conversion cannot read it back.
+
+Measured on one 25-task codex sweep: two trials at 260 and 264 characters
+recorded no tokens at all — one of them a *solve* worth 2.26M input and 140k
+output — and two more sat at 258, two characters from the same fate. The run's
+reported input total was 53.3M against a real 55.5M.
+
+**Check:**
+
+```powershell
+Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' LongPathsEnabled
+```
+
+**Fix**, cheapest first:
+
+1. Enable long paths (needs admin, then a reboot):
+   `Set-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' LongPathsEnabled 1`
+2. Or move `runs_dir` shallower. The run-directory name carries a harness, a
+   model, a benchmark slug and a timestamp, so the budget above it is small.
+
+Since 0.1.26 `bench` projects the deepest path a run will write and warns
+before starting, naming the task that reaches the limit. The projection is
+per-harness and measured off real runs: claude-code writes 109 characters below
+a trial directory, omp 102, codex 96, dsh 85, and everything else 32. Tokens
+that Harbor loses this way are now recovered from the harness's own log where
+it printed them, and the run reports `n_tokens_recovered` so a recovered number
+is never mistaken for one Harbor recorded.
 
 ---
 
