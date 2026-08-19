@@ -36,6 +36,10 @@ COMMANDS: dict[str, tuple[str, str]] = {
         "Patch a chat template that refuses a harness's request shape",
     ),
     "bench": ("bench.runner", "Run the benchmark, one harness after another"),
+    "rerun": (
+        "bench.rerun",
+        "Re-run one task and graft it into a finished run",
+    ),
     "dash": ("dashboard.server", "Serve the live dashboard"),
     "export": ("dashboard.server", "Write a standalone snapshot HTML"),
     "collect": ("bench.collect", "Print a text summary of all runs"),

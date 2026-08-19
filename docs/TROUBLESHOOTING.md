@@ -248,34 +248,46 @@ Never as a bare positional.
 
 ### Re-running one task into a finished run
 
-After fixing a harness bug you usually want the one affected cell corrected
-without paying to re-run the other 24 tasks. Run the single task into a scratch
-jobs-dir, then copy the trial directory beside the original inside the finished
-run:
+After a harness bug, a throttled package host or an endpoint that dropped, you
+usually want one cell corrected and the other twenty-four left alone:
 
 ```bash
-python -m bench.runner --harness opencode --task <task> --jobs-dir /tmp/rerun \
-  --agent-timeout-multiplier <same as the original run> --n-attempts 1
-cp -r /tmp/rerun/<job>/<task>__* runs/<original-job>/<task>__zz-rerun
+harness-arena rerun --run <job> --task <task> --why "package host was throttling"
 ```
 
-Two things make this work. `load_run` keeps the **last** attempt per task name
-sorted by directory name, so a suffix that sorts after the original wins and the
-failed attempt stays on disk as evidence. And the copied directory must contain
-a `rerun.json` marker (any JSON; record what it supersedes and why), without it
-the graft ends the run's clock, because wall clock runs from the manifest's
-start to the last trial to finish. A next-day re-run reported one 3.7-hour run
-as 27.1 hours and dropped its LLM-busy share from 93% to 13%. With the marker,
-the graft counts toward the score, the checks and the tokens, and is left out of
-the two timing figures only.
+`--run` takes the run directory name, a unique part of it, or a path. Repeat
+`--task` for several. `--dry-run` shows the command it would run and grafts
+nothing.
 
-Match the original run's `agent_timeout_multiplier` and attempt settings, or the
-grafted trial is not comparable to the ones beside it. Check the original's
-`harness-bench.json`.
+It runs the task into a scratch directory first, compares that run's manifest
+against the original's, and grafts only if they agree. The superseded attempt is
+never deleted — it stays on disk as the evidence for why the graft exists.
 
-If the run's summary still shows an error afterwards, it is Harbor's job-level
-`result.json`, which is written once at the end and names the superseded trial
-id; `collect.load_run` falls back to it only when no trial-level errors remain.
+**Why not just copy the directory.** Doing this by hand has four failure modes
+and three are silent:
+
+| Mistake | What it does |
+|---|---|
+| No `rerun.json` marker | Wall clock runs to the graft's finish time. A measured 3.7-hour run reported **27.1 hours**, LLM-busy falling 93% → 13% |
+| Directory sorts before the original | `load_run` keeps the *last* attempt per task, so the failed one keeps winning and the correction is invisible |
+| Different timeout/attempts/window | A cell measured under different settings, sitting in a run that was held constant |
+| Catalog drift since the run | The pinned version, output cap and reasoning effort all come from the catalog *at run time* |
+
+That last one is the least visible. `hermes` and `omp` gained
+`{reasoning_effort}` in 0.1.27 — a hermes trial grafted into an older hermes run
+is a thinking trial among non-thinking ones, and nothing about the cell says so.
+
+`harness-arena rerun` refuses rather than warns, on any of: the weights being
+served, the harness, its pinned build, the benchmark, the context window, the
+output ceiling, the timeout multiplier, the attempts per task, the reasoning
+effort, and whether that effort reached the harness. A field the original never
+recorded is not compared — otherwise every run written before a field was added
+would become ungraftable for a reason about the rig rather than about the run.
+`--force` grafts anyway and records the differences in the marker.
+
+**What a graft counts toward.** The score, the checks and the tokens — it is a
+real result. Not the two timing figures: it ran on another day, outside this
+run's window. The dashboard flags it as a graft.
 
 ### Any vision task: `image input is not supported`
 

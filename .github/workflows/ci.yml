@@ -60,6 +60,9 @@ jobs:
       - name: Diagnostics and failure signatures
         run: python tests/test_diagnose.py
 
+      - name: Grafting a re-run into a finished run
+        run: python tests/test_rerun.py
+
       - name: Request-shape probing and the template patch
         run: python tests/test_wireshape.py
 
