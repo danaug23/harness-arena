@@ -1672,9 +1672,20 @@ function renderLeaderboard(runs) {
           // Never silent: a denominator that shrank without saying so is the
           // one way this panel could mislead about the experiment itself.
           r.n_unscored
-            ? `<div class="t-r">not scored <b>${r.n_unscored}</b> — the harness could
-               not send a request; excluded from the rate${
-                 r.debug_capture ? "" : " (diagnostics were off, so the cause is unrecorded)"}</div>`
+            ? `<div class="t-r">not scored <b>${r.n_unscored}</b> — ${
+                 // Two very different causes with one consequence, and the
+                 // remedy is not the same: check the endpoint, or wait for a
+                 // package host to stop throttling you.
+                 r.n_supply === r.n_unscored
+                   ? `the harness could not be installed (a package host declined
+                      to serve it)`
+                   : r.n_supply
+                     ? `${r.n_unscored - r.n_supply} could not reach the model,
+                        ${r.n_supply} could not be installed`
+                     : `the harness could not send a request`
+               }; excluded from the rate${
+                 r.n_supply === r.n_unscored || r.debug_capture ? ""
+                   : " (diagnostics were off, so the cause is unrecorded)"}</div>`
             : "",
           `<div class="t-r">concurrency <b>${r.n_concurrent == null ? "?" : r.n_concurrent}</b>
              ${r.n_concurrent_agents != null
@@ -1854,7 +1865,12 @@ function cellFor(run, task) {
   // The connection to the model died mid-trial. That is infrastructure, not
   // the harness being wrong, and it is excluded from the pass rate -- so it
   // must not wear the same "!" as a harness that crashed on its own.
-  if (t.fault === "transport") return { ...CELL.unscored, task: t };
+  // Same glyph for a harness that was never installed: the supply chain
+  // declining to serve is not the harness being wrong either, and the trial
+  // never got a fair attempt. See collect.UNSCORED_FAULTS.
+  if (t.fault === "transport" || t.fault === "supply") {
+    return { ...CELL.unscored, task: t };
+  }
 
   // A timeout is not a crash and not a wrong answer -- the agent was still
   // working when the budget ran out. Lumping it in with errors hides the single
@@ -1921,7 +1937,7 @@ const LEGEND = [
   ["fail", '<b style="color:var(--ink-muted)">·</b> failed'],
   ["timeout", '<b style="color:#f6c657">T 1/3</b> out of time — with whatever checks it had passed by then'],
   ["error", '<b style="color:#f08a8a">!</b> errored (harness fault, not a wrong answer)'],
-  ["unscored", '<b style="color:#7aa2c9">~</b> the request never reached the model — not scored, not counted against the harness'],
+  ["unscored", '<b style="color:#7aa2c9">~</b> the trial never got a fair attempt — the model was unreachable, or the harness could not be installed. Not scored, not counted against the harness'],
 ];
 
 function legendFor(kinds) {

@@ -301,6 +301,106 @@ def test_a_short_run_has_no_runaways(tmp: Path) -> None:
           load_run(job)["runaways"], [])
 
 
+
+def test_a_package_host_declining_to_serve_is_not_the_harness_failing(tmp: Path) -> None:
+    """A 429 from GitHub is not a network fault and not a broken harness.
+
+    Measured on a hermes sweep, 2026-08-19: `raw.githubusercontent.com` answered
+    every install-script request with HTTP 429, five of seven trials died before
+    the agent sent anything, and all five were charged to hermes. The endpoint
+    was fine -- the two trials that got past the install ran normally, one of
+    them scoring 1.0 on 712,881 input tokens.
+
+    Harbor names it NetworkConnectionError, which is where "network connection
+    issues" came from. Nothing was wrong with the network; a host answered
+    correctly and said "too many requests".
+    """
+    job = tmp / "hermes__m__20260819T133720Z"
+    job.mkdir(parents=True)
+    (job / "harness-bench.json").write_text(json.dumps({
+        "harness": "hermes", "harness_label": "Hermes Agent",
+        "model": {"label": "M", "fingerprint": "fp1"},
+    }), encoding="utf-8")
+
+    throttled = (
+        "hermes install: could not fetch "
+        "https://raw.githubusercontent.com/NousResearch/hermes-agent/"
+        "v2026.8.3/scripts/install.sh\n"
+        "curl: (22) The requested URL returned error: 429\n"
+    )
+    _write_trial(job, "installed-fine", resolved=True, tokens=900, suffix="a")
+    _write_trial(job, "genuinely-failed", resolved=False, tokens=800, suffix="b")
+    _write_trial(job, "never-installed", resolved=False, tokens=None, suffix="c",
+                 exception="NetworkConnectionError", message=throttled)
+    # The harness crashing on its own is still the harness's, even though it
+    # also mentions a host it installs from.
+    _write_trial(job, "harness-crashed", resolved=False, tokens=None, suffix="d",
+                 exception="NonZeroAgentExitCodeError",
+                 message="cloned github.com/x/y ok\npanic: index out of range\n")
+
+    run = load_run(job)
+    faults = {t["task_name"]: t["fault"] for t in run["tasks"]}
+    check("a throttled install is the supply chain, not the harness",
+          faults["never-installed"], "supply")
+    check("...and a crash that merely names a host is still the harness's",
+          faults["harness-crashed"], "harness")
+    check("a clean pass has no fault", faults["installed-fine"], None)
+
+    check("the trial that never ran leaves the denominator", run["n_done"], 3)
+    check("...and is reported rather than hidden", run["n_unscored"], 1)
+    check("...named as the supply chain, not the endpoint", run["n_supply"], 1)
+    check("...while still being counted as attempted", run["n_attempted"], 4)
+    # The whole point: hermes is not charged for GitHub throttling it.
+    check("the harness is not charged for it", run["n_errors"], 1)
+    check("the pass rate is over what actually ran",
+          round(run["pass_rate"], 4), round(1 / 3, 4))
+
+
+def test_a_task_downloading_its_own_source_is_never_a_supply_fault(tmp: Path) -> None:
+    """Terminal-Bench tasks fetch things constantly. That must not match.
+
+    `build-pov-ray` downloads its own source archives; plenty of tasks curl a
+    package index. The conjunct that keeps them out is usage: a task that ran
+    long enough to fetch anything has generated tokens, so it can never reach
+    the supply branch however much its log looks like one.
+    """
+    job = tmp / "h__m__20260819T000000Z"
+    job.mkdir(parents=True)
+    (job / "harness-bench.json").write_text(json.dumps({
+        "harness": "h", "model": {"label": "M", "fingerprint": "fp1"},
+    }), encoding="utf-8")
+
+    # The agent worked for a while and *then* the task's own download failed.
+    _write_trial(job, "task-fetched-its-own", resolved=False, tokens=5000, suffix="a",
+                 exception="NonZeroAgentExitCodeError",
+                 message="curl https://pypi.org/simple/numpy/ -> 429 too many requests\n")
+    faults = {t["task_name"]: t["fault"] for t in load_run(job)["tasks"]}
+    check("a task's own throttled download is the harness's trial to lose",
+          faults["task-fetched-its-own"], "harness")
+
+
+def test_the_endpoint_still_wins_when_a_hostname_overlaps(tmp: Path) -> None:
+    """A model served through one of those hosts is still a transport fault.
+
+    The supply check runs after the transport one on purpose: which host a
+    model happens to be reached through must not change how a dropped
+    connection to it reads.
+    """
+    job = tmp / "h__m__20260819T010000Z"
+    job.mkdir(parents=True)
+    (job / "harness-bench.json").write_text(json.dumps({
+        "harness": "h", "model": {"label": "M", "fingerprint": "fp1"},
+    }), encoding="utf-8")
+    _write_trial(job, "endpoint-dropped", resolved=False, tokens=None, suffix="a",
+                 exception="NetworkConnectionError",
+                 message="error sending request for url "
+                         "(https://github.com/proxy/v1/chat/completions)\n"
+                         "could not fetch: 429\n")
+    faults = {t["task_name"]: t["fault"] for t in load_run(job)["tasks"]}
+    check("a dropped model connection is transport, whatever the host",
+          faults["endpoint-dropped"], "transport")
+
+
 def test_pairing() -> None:
     a = make_run(run_id="a", harness="hermes")
     b = make_run(run_id="b", harness="omp", harness_label="omp")
@@ -1381,6 +1481,13 @@ if __name__ == "__main__":
         test_a_task_that_ate_the_run_and_failed_is_called_out(Path(scratch))
     with tempfile.TemporaryDirectory() as scratch:
         test_a_short_run_has_no_runaways(Path(scratch))
+    with tempfile.TemporaryDirectory() as scratch:
+        test_a_package_host_declining_to_serve_is_not_the_harness_failing(
+            Path(scratch))
+    with tempfile.TemporaryDirectory() as scratch:
+        test_a_task_downloading_its_own_source_is_never_a_supply_fault(Path(scratch))
+    with tempfile.TemporaryDirectory() as scratch:
+        test_the_endpoint_still_wins_when_a_hostname_overlaps(Path(scratch))
     test_pairing()
     test_wilson()
     print("\n" + ("FAILED: " + ", ".join(failures) if failures else "all checks passed"))

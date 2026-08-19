@@ -355,6 +355,45 @@ own trace and flags these trials as `hit_output_cap`, the run reports
 reached the ceiling**. The reward is left alone — the trial was graded, and a
 graded result is not an error.
 
+### hermes (or any harness): `NetworkConnectionError`, but the endpoint is fine
+
+```
+hermes install: could not fetch
+ https://raw.githubusercontent.com/NousResearch/hermes-agent/v2026.8.3/scripts/install.sh
+curl: (22) The requested URL returned error: 429
+```
+
+**HTTP 429 is not a network fault.** The host answered correctly and said *too
+many requests*. Harbor classifies any failed fetch as `NetworkConnectionError`,
+which is where "network connection issues" comes from — but nothing is wrong
+with your network or your model endpoint.
+
+Measured on 2026-08-19: five of seven hermes trials died this way, all of them
+at *agent install*, before the harness sent a single request. The two that got
+past the install ran normally — one scored 1.0 on 712,881 input tokens.
+
+**Why it happens.** Every trial re-downloads the harness's installer. A 25-task
+subset restarted three times in an afternoon is a few hundred unauthenticated
+requests to `raw.githubusercontent.com` from one address, and GitHub throttles
+those.
+
+**What to do.** Wait for the limit to clear — GitHub's raw endpoints typically
+reset within the hour — and re-run. Avoid restarting the same sweep repeatedly.
+
+**What the rig does now.** Since 0.1.28 these trials are classified as a
+*supply* fault: they leave the denominator and are marked unscored rather than
+counted against the harness. Before that they were charged to it, so a
+throttled sweep made a working harness look broken. The run tooltip says "the
+harness could not be installed (a package host declined to serve it)" rather
+than "could not send a request", because the two have different remedies.
+
+The rule is narrow on purpose. A trial qualifies only when the failure names a
+host harnesses install *from*, carries a refusal-to-serve signature, **and**
+reported no tokens at all. That last condition is what keeps a task's own
+downloading out of it — `build-pov-ray` fetches its own source, and plenty of
+tasks curl a package index, but a task that ran long enough to fetch anything
+has generated tokens.
+
 ### Windows: a trial scores normally and reports no tokens at all
 
 `FileNotFoundError` on a file that is sitting right there:

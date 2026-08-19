@@ -397,13 +397,69 @@ _FAULT_TAIL_LINES = 40
 VERIFIER_RAN_EXCEPTIONS = frozenset({"rewardfilenotfounderror"})
 
 
+#: Faults that take a trial out of the denominator. Neither is the harness
+#: being measured: one is the model endpoint dropping, the other is the harness
+#: never getting installed. Both leave the trial visible in the matrix, marked
+#: unscored -- silently dropping it is its own kind of lie.
+UNSCORED_FAULTS = frozenset({"transport", "supply"})
+
+
 def _reached_a_verdict(exception_type: str | None) -> bool:
     """True when the verifier ran and still produced no score."""
     return bool(exception_type) and exception_type.lower() in VERIFIER_RAN_EXCEPTIONS
 
 
+#: Hosts a harness fetches *its own software* from, before it does any work.
+#: Mirrors `allow_agent_hosts` in the catalog, which is the same list for the
+#: same reason -- but kept here as a constant rather than read from the catalog,
+#: because a run recorded months ago must keep being read the way it happened
+#: even if the catalog has since dropped a host.
+_INSTALL_HOSTS = (
+    "raw.githubusercontent.com", "objects.githubusercontent.com",
+    "api.github.com", "github.com", "registry.npmjs.org", "nodejs.org",
+    "pypi.org", "files.pythonhosted.org", "downloads.claude.ai",
+)
+
+#: A package host declining to serve, rather than failing to be reached. The
+#: 429 is the case that produced this: GitHub answered every request correctly
+#: and said "too many requests", which is not a network fault at all.
+_SUPPLY_SIGNATURES = (
+    "429", "too many requests", "rate limit", "rate-limit",
+    "could not fetch", "failed to fetch", "403 forbidden",
+    "503 service unavailable", "could not resolve host",
+)
+
+
 def _fault_kind(result: dict[str, Any], trial_dir: Path | None) -> str | None:
-    """Whose fault the trial's exception was, or None if it did not raise."""
+    """Whose fault the trial's exception was, or None if it did not raise.
+
+    Three answers, and the third exists because a run went looking for a fourth.
+
+    "transport" is the model endpoint dropping mid-turn. "harness" is the
+    harness being wrong. Neither described what happened to a hermes sweep on
+    2026-08-19: `raw.githubusercontent.com` answered its install-script request
+    with HTTP 429, five of seven trials died before the agent sent a single
+    request, and all five were charged to hermes. The supply chain being
+    unavailable is not the harness being bad, and it is not the endpoint
+    failing either -- the endpoint was serving the two trials that got past the
+    install perfectly well.
+
+    So "supply", recognised by three things together, all of which were true of
+    those five trials and none of which is true of a task doing its own
+    downloading:
+
+    * the failure names a host harnesses install *from*, not one they talk to;
+    * it carries a refusal-to-serve signature rather than a connection error;
+    * the trial reported no tokens at all, which is what "the agent never ran"
+      looks like from here. This is the conjunct that makes the rule safe.
+      Terminal-Bench tasks fetch things constantly -- `build-pov-ray` downloads
+      its own source -- but a task that ran long enough to curl anything has
+      generated tokens, so it can never land in this branch.
+
+    Ordered after the transport check deliberately: a model endpoint that
+    happens to be reached through one of these hosts is still a transport
+    fault, and that reading should not change because a hostname overlapped.
+    """
     exception = result.get("exception_info") or {}
     if not exception.get("exception_type"):
         return None
@@ -419,7 +475,28 @@ def _fault_kind(result: dict[str, Any], trial_dir: Path | None) -> str | None:
             path in lowered for path in _API_PATHS
         ):
             return "transport"
+
+    # Read across the whole window rather than one line: curl reports the URL
+    # it could not fetch and the status it got back on separate lines, so the
+    # host and the refusal are never together the way an endpoint fault's are.
+    if _spent_nothing(result):
+        window = "\n".join(lines).lower()
+        if any(h in window for h in _INSTALL_HOSTS) and any(
+            sig in window for sig in _SUPPLY_SIGNATURES
+        ):
+            return "supply"
     return "harness"
+
+
+def _spent_nothing(result: dict[str, Any]) -> bool:
+    """True when the trial reported no usage at all -- the agent never ran."""
+    agent = result.get("agent_result")
+    if not isinstance(agent, dict):
+        return True
+    return not any(
+        isinstance(agent.get(k), (int, float)) and agent[k]
+        for k in ("n_input_tokens", "n_output_tokens")
+    )
 
 
 #: How much of a trial's exception to keep, split between its two informative
@@ -540,7 +617,7 @@ def normalize_trial(
     # error -- see VERIFIER_RAN_EXCEPTIONS. Transport still wins: if the
     # endpoint died, the trial never got a fair attempt and stays excluded from
     # the denominator regardless of how far the verifier got afterwards.
-    unscorable = fault != "transport" and _reached_a_verdict(exception_type)
+    unscorable = fault not in UNSCORED_FAULTS and _reached_a_verdict(exception_type)
 
     checks = read_checks(trial_dir) if trial_dir else []
     n_passed = sum(1 for c in checks if c["status"] == "passed")
@@ -563,7 +640,8 @@ def normalize_trial(
         # Usually a build failure: the tests are compiled against the agent's
         # code, so code that does not compile cannot be scored.
         "no_reward_reason": exception_type if unscorable else None,
-        # "transport" | "harness" | None -- see _fault_kind. Only harness faults
+        # "transport" | "supply" | "harness" | None -- see _fault_kind. Only
+        # harness faults
         # are the harness's to answer for. Unchanged by the above: an
         # unscorable submission is still the harness's failure, which is what
         # keeps it in the denominator rather than quietly discounted.
@@ -848,7 +926,7 @@ def load_run(job_dir: Path) -> dict[str, Any] | None:
     # harness being wrong, so those trials leave the denominator instead of
     # counting as failures. They stay in `tasks`: the matrix still shows them,
     # marked unscored, because silently dropping a trial is its own kind of lie.
-    scored = [t for t in tasks if t["fault"] != "transport"]
+    scored = [t for t in tasks if t["fault"] not in UNSCORED_FAULTS]
     n_attempted = len(tasks)
     n_done = len(scored)
     n_unscored = n_attempted - n_done
@@ -1033,6 +1111,9 @@ def load_run(job_dir: Path) -> dict[str, Any] | None:
         # Trials removed from the denominator because the endpoint, not the
         # harness, is what failed.
         "n_unscored": n_unscored,
+        # How many of those were the supply chain rather than the endpoint.
+        # Both leave the denominator; only one is fixed by checking your server.
+        "n_supply": sum(1 for t in tasks if t.get("fault") == "supply"),
         "n_resolved": n_resolved,
         "n_errors": n_errors,
         "max_retries": manifest.get("max_retries"),
@@ -1120,8 +1201,10 @@ def head_to_head(run_a: dict[str, Any], run_b: dict[str, Any]) -> dict[str, Any]
     # Unscored trials are excluded from both sides: a task one run never got a
     # fair attempt at would otherwise land in "only B solved it", which reads
     # as a difference between the harnesses when it is a dropped connection.
-    a = {t["task_name"]: t["resolved"] for t in run_a["tasks"] if t.get("fault") != "transport"}
-    b = {t["task_name"]: t["resolved"] for t in run_b["tasks"] if t.get("fault") != "transport"}
+    a = {t["task_name"]: t["resolved"]
+         for t in run_a["tasks"] if t.get("fault") not in UNSCORED_FAULTS}
+    b = {t["task_name"]: t["resolved"]
+         for t in run_b["tasks"] if t.get("fault") not in UNSCORED_FAULTS}
     shared = sorted(set(a) & set(b))
     only_a = [name for name in shared if a[name] and not b[name]]
     only_b = [name for name in shared if b[name] and not a[name]]

@@ -95,6 +95,29 @@ class _Signature:
 
 SIGNATURES: tuple[_Signature, ...] = (
     _Signature(
+        id="install-host-throttled",
+        title="A package host is rate-limiting this machine",
+        needles=("could not fetch", "429"),
+        detail=(
+            "The harness could not download its own installer. The host "
+            "answered correctly and said 'too many requests' -- nothing is "
+            "wrong with the network or with the model endpoint, which is why "
+            "trials that got past the install run normally. Every trial "
+            "re-fetches the installer, so a repeated sweep of a 25-task subset "
+            "is a few hundred unauthenticated requests from one address, and "
+            "GitHub in particular throttles those."
+        ),
+        fixes=(
+            "Wait for the limit to reset -- GitHub's raw endpoints typically "
+            "clear within the hour -- and re-run.",
+            "Avoid restarting the same sweep repeatedly; each start re-fetches "
+            "the installer once per trial.",
+            "Trials that fail this way are marked unscored rather than counted "
+            "against the harness, so a partly-throttled run does not deflate "
+            "its pass rate.",
+        ),
+    ),
+    _Signature(
         id="dataset-env",
         title="This benchmark needs its own model endpoint",
         needles=("missing environment variables",),
