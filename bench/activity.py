@@ -112,6 +112,25 @@ def find_active_trials(runs_dir: Path = RUNS_DIR) -> list[dict[str, Any]]:
         if not job_dir.is_dir() or job_dir.name.startswith("."):
             continue
         manifest = _read_json(job_dir / MANIFEST_NAME) or {}
+        # A run that is over has nothing in flight, whatever its trial
+        # directories still look like. "No result.json" means "in flight" only
+        # inside a run that is still going: a stopped run's unfinished trials
+        # never get one, so they answer yes forever.
+        #
+        # Observed with two runs of the same subset on disk, one stopped at
+        # 14:21 and one started at 14:36: the feed offered eight trials, four of
+        # them 19-minute-old corpses of the stopped run, with the same task
+        # names as the four that were live. The strip showed each task twice and
+        # nothing distinguished the dead copy from the working one.
+        #
+        # Both signals, because they do not always agree: a stopped run carries
+        # `stopped_at` in its manifest and may never write a job result at all,
+        # while a run that ended on its own carries `finished_at` and no
+        # `stopped_at`. This is the same pair collect._wall_clock uses to decide
+        # a run has ended.
+        job_result = _read_json(job_dir / "result.json") or {}
+        if manifest.get("stopped_at") or job_result.get("finished_at"):
+            continue
         for trial_dir in job_dir.iterdir():
             if not trial_dir.is_dir() or (trial_dir / "result.json").exists():
                 continue

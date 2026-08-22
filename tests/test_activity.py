@@ -46,19 +46,33 @@ def check(label: str, got: object, want: object) -> None:
         failures.append(label)
 
 
-def make_run(runs: Path, name: str, trials: dict[str, dict]) -> Path:
+def make_run(
+    runs: Path,
+    name: str,
+    trials: dict[str, dict],
+    stopped_at: str | None = None,
+    finished_at: str | None = None,
+) -> Path:
     """A runs/ tree shaped like Harbor's, with the trials described by `trials`.
 
     Each value may set `done` (a result.json exists), `log` (agent output, which
     is what makes a trial "started"), and `mtime` (to order the logs
     deterministically instead of relying on how fast the filesystem is).
+
+    `stopped_at` and `finished_at` end the run the two ways a run ends.
     """
     job = runs / name
     job.mkdir(parents=True)
-    (job / "harness-bench.json").write_text(json.dumps({
+    manifest = {
         "harness": "minion", "harness_label": "dmfa-minion",
         "model": {"label": "Qwen3.8 27B"},
-    }), encoding="utf-8")
+    }
+    if stopped_at:
+        manifest["stopped_at"] = stopped_at
+    (job / "harness-bench.json").write_text(json.dumps(manifest), encoding="utf-8")
+    if finished_at:
+        (job / "result.json").write_text(
+            json.dumps({"finished_at": finished_at}), encoding="utf-8")
 
     for trial_name, spec in trials.items():
         tdir = job / trial_name
@@ -203,6 +217,77 @@ def test_two_benchmarks_at_once_do_not_collide(scratch: Path) -> None:
           "job1")
 
 
+def test_a_stopped_run_has_nothing_in_flight(scratch: Path) -> None:
+    """The reported bug: eight tabs for four running trials.
+
+    "No result.json" means "in flight" only inside a run that is still going. A
+    stopped run's unfinished trials never get one, so they answer yes forever --
+    and with the same subset run twice, the strip showed every task twice with
+    nothing to say which copy was the live one. Observed with a run stopped at
+    14:21 beside one started at 14:36: four 19-minute-old corpses presented as
+    running.
+    """
+    runs = scratch / "runs"
+    now = time.time()
+    make_run(runs, "job_stopped", {
+        "alpha__dead": {"log": "old", "mtime": now - 1200},
+        "beta__dead": {},
+    }, stopped_at="2026-08-22T14:21:23+00:00")
+    make_run(runs, "job_live", {
+        "alpha__live": {"log": "new", "mtime": now - 5},
+        "beta__live": {},
+    })
+
+    act = read_activity(runs)
+    keys = [t["key"] for t in act["trials"]]
+    check("only the live run's trials are in flight", len(keys), 2)
+    check("no corpse from the stopped run",
+          [k for k in keys if k.startswith("job_stopped/")], [])
+    check("each task appears exactly once",
+          sorted(t["task"] for t in act["trials"]), ["alpha", "beta"])
+
+
+def test_a_run_that_finished_on_its_own_also_has_nothing_in_flight(
+    scratch: Path,
+) -> None:
+    """The other way a run ends: a job result with finished_at, no stopped_at.
+
+    Both signals are needed. A stopped run may never write a job result at all,
+    and a run that ended on its own carries no stopped_at -- so checking either
+    one alone leaves half the corpses on screen.
+    """
+    runs = scratch / "runs"
+    make_run(runs, "job_over", {"alpha__x": {"log": "old"}},
+             finished_at="2026-08-22T08:46:24+00:00")
+    check("a finished run offers no trials", read_activity(runs),
+          {"active": False})
+
+    make_run(runs, "job_going", {"beta__y": {"log": "new"}})
+    act = read_activity(runs)
+    check("...while a live one beside it still does",
+          [t["task"] for t in act["trials"]], ["beta"])
+
+
+def test_repeated_task_names_stay_addressable(scratch: Path) -> None:
+    """--n-attempts 2, and two benchmarks at once, both repeat a task name.
+
+    The label is the page's problem, but the key is this module's: two trials of
+    one task have to remain separately selectable or a tab cannot be honoured.
+    """
+    runs = scratch / "runs"
+    now = time.time()
+    make_run(runs, "job1", {
+        "alpha__try1": {"log": "a", "mtime": now - 20},
+        "alpha__try2": {"log": "b", "mtime": now - 10},
+    })
+    act = read_activity(runs)
+    check("both attempts are in flight", len(act["trials"]), 2)
+    check("...under distinct keys", len({t["key"] for t in act["trials"]}), 2)
+    first = act["trials"][1]["key"]
+    check("...and each is selectable", read_activity(runs, selected=first)["key"],
+          first)
+
+
 def test_no_runs_at_all(scratch: Path) -> None:
     check("a missing runs dir is not active",
           read_activity(scratch / "nope"), {"active": False})
@@ -228,6 +313,9 @@ if __name__ == "__main__":
         test_only_the_selected_trial_pays_for_a_tail,
         test_a_trial_that_has_not_started_reports_setting_up,
         test_two_benchmarks_at_once_do_not_collide,
+        test_a_stopped_run_has_nothing_in_flight,
+        test_a_run_that_finished_on_its_own_also_has_nothing_in_flight,
+        test_repeated_task_names_stay_addressable,
         test_no_runs_at_all,
         test_trial_key_is_run_qualified,
     ):

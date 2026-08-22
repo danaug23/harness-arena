@@ -553,6 +553,39 @@ if (!process.argv[2]) {
   console.log(`${canUnpin ? "PASS" : "FAIL"}  a pinned feed offers follow-newest`);
   if (!canUnpin) failed++;
 
+  // A task name repeats among the trials in flight two legitimate ways:
+  // --n-attempts 2 runs one task twice inside a run, and two benchmarks in
+  // flight share a task list. Tabs labelled identically can be selected but not
+  // told apart, which is the same confusion the strip was added to remove.
+  const twins = [
+    trial("merge-diff-arc-agi-task", { key: "run1/merge-diff-arc-agi-task__aaa" }),
+    trial("merge-diff-arc-agi-task", { key: "run2/merge-diff-arc-agi-task__zzz" }),
+    trial("write-compressor", { key: "run1/write-compressor__bbb" }),
+  ];
+  vm.runInContext(
+    `state.feedTrial = null; state.activity = ${feedState({
+      key: "run1/merge-diff-arc-agi-task__aaa", task: "merge-diff-arc-agi-task",
+      trials: twins,
+    })};`, ctx);
+  const dup = vm.runInContext("renderFeed()", ctx);
+  // The colliding pair is qualified by the trial's own suffix, which is unique
+  // in both cases; the name that does not collide is left alone.
+  const qualified = /merge-diff-arc-agi-task · aaa/.test(dup)
+    && /merge-diff-arc-agi-task · zzz/.test(dup);
+  console.log(`${qualified ? "PASS" : "FAIL"}  colliding tab labels are qualified`);
+  if (!qualified) failed++;
+
+  const untouched = dup.includes("</i>write-compressor")
+    && !dup.includes("write-compressor ·");
+  console.log(`${untouched ? "PASS" : "FAIL"}  a unique label is left unqualified`);
+  if (!untouched) failed++;
+
+  // Still three separately selectable tabs, one selected.
+  const three = (dup.match(/data-feed-trial="run/g) || []).length === 3
+    && (dup.match(/aria-selected="true"/g) || []).length === 1;
+  console.log(`${three ? "PASS" : "FAIL"}  every twin stays separately selectable`);
+  if (!three) failed++;
+
   // A pinned trial that finished is the case where the feed legitimately shows
   // something other than what was asked for. Silence there is indistinguishable
   // from the panel mislabelling its own contents.

@@ -1662,20 +1662,37 @@ function renderFeed() {
   // One tab per trial in flight. Below two there is nothing to switch between,
   // and a lone tab reads as a control that does not work.
   const trials = a.trials || [];
+  // A task name is not unique among the trials in flight. Two ways it repeats,
+  // both legitimate: --n-attempts 2 runs the same task twice inside one run,
+  // and two benchmarks in flight at once share a task list. Identical tabs are
+  // then unreadable -- you can select them but not tell them apart -- so the
+  // trial's own suffix, which is unique either way, is appended to the ones
+  // that collide and left off the ones that do not.
+  const seen = {};
+  trials.forEach((t) => { seen[t.task] = (seen[t.task] || 0) + 1; });
+  const suffixOf = (key) => String(key || "").split("__").pop();
   const tabs = trials.length > 1
     ? `<div class="feed-tabs" role="tablist">
          ${trials.map((t) => {
            const on = t.key === a.key;
            const dot = t.phase !== "agent" ? "setup"
              : (t.silent_s != null && t.silent_s > 45) ? "quiet" : "";
-           const why = t.phase !== "agent"
+           const state = t.phase !== "agent"
              ? "Building the container and installing the harness — the model has not started"
              : dot === "quiet"
                ? `No new output for ${dur(t.silent_s)}`
                : "Streaming";
+           // The run is named in full only when there is more than one, because
+           // that is the only time it is what distinguishes two tabs.
+           const why = `${t.task}
+${state}
+${t.run_id || ""}`;
+           const label = seen[t.task] > 1
+             ? `${t.task} · ${suffixOf(t.key)}`
+             : t.task || "?";
            return `<button class="feed-tab" role="tab" data-feed-trial="${esc(t.key)}"
                      aria-selected="${on}" title="${esc(why)}">
-                     <i class="${dot}"></i>${esc(t.task || "?")}
+                     <i class="${dot}"></i>${esc(label)}
                    </button>`;
          }).join("")}
          ${state.feedTrial
