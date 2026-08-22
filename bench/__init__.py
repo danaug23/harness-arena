@@ -18,7 +18,7 @@ from pathlib import Path
 
 #: Single source of truth. pyproject reads this, so a release cannot ship
 #: a wheel whose --version disagrees with the version on the index.
-__version__ = "0.1.30"
+__version__ = "0.1.31"
 
 #: Where the code is. In a wheel install this is site-packages.
 ROOT = Path(__file__).resolve().parent.parent
