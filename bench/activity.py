@@ -90,32 +90,58 @@ def _read_json(path: Path) -> dict[str, Any] | None:
     return parsed if isinstance(parsed, dict) else None
 
 
-def find_active_trial(runs_dir: Path = RUNS_DIR) -> dict[str, Any] | None:
-    """The most recently touched trial that has not produced a result yet."""
-    if not runs_dir.exists():
-        return None
+def find_active_trials(runs_dir: Path = RUNS_DIR) -> list[dict[str, Any]]:
+    """Every trial in flight, most recently active first.
 
-    best: dict[str, Any] | None = None
+    At `--n-concurrent-agents 2` or more there is more than one of these at any
+    moment, and the feed used to show whichever had written most recently -- so
+    a four-concurrent run presented one trial and silently discarded the other
+    three, and which one you got changed between polls as their logs took turns
+    being the newest. The caller picks; this reports all of them.
+    """
+    found: list[dict[str, Any]] = []
+    if not runs_dir.exists():
+        return found
+
     for job_dir in runs_dir.iterdir():
-        if not job_dir.is_dir():
+        # `.harness-arena` lives in the runs directory and is this tool's own
+        # state, not a run. Its `logs/` child has no result.json, so scanning it
+        # as a job offered "logs" as a trial named after the directory -- which
+        # the old single-trial pick hid, because a directory with no agent log
+        # sorts last and never won. Listing every trial made it visible.
+        if not job_dir.is_dir() or job_dir.name.startswith("."):
             continue
         manifest = _read_json(job_dir / MANIFEST_NAME) or {}
         for trial_dir in job_dir.iterdir():
             if not trial_dir.is_dir() or (trial_dir / "result.json").exists():
                 continue
+            # Harbor writes config.json when it creates the trial, before any
+            # setup runs, so this is true for a trial that has not started yet
+            # and false for anything that is not a trial at all.
+            if not (trial_dir / "config.json").exists():
+                continue
             log_path = find_log(trial_dir)
             # Ordering by the agent log's mtime, not the directory's: the
             # directory timestamp stops moving once setup finishes.
             when = log_path.stat().st_mtime if log_path else 0.0
-            if best is None or when > best["_mtime"]:
-                best = {
-                    "_mtime": when,
-                    "job_dir": job_dir,
-                    "trial_dir": trial_dir,
-                    "manifest": manifest,
-                    "log_path": log_path,
-                }
-    return best
+            found.append({
+                "_mtime": when,
+                "job_dir": job_dir,
+                "trial_dir": trial_dir,
+                "manifest": manifest,
+                "log_path": log_path,
+            })
+    # Most recently active first, so the default selection is the trial actually
+    # producing output. Tie-broken by name so the tab order is stable across
+    # polls rather than reshuffling whenever two logs share an mtime.
+    found.sort(key=lambda f: (-f["_mtime"], f["trial_dir"].name))
+    return found
+
+
+def find_active_trial(runs_dir: Path = RUNS_DIR) -> dict[str, Any] | None:
+    """The most recently touched trial that has not produced a result yet."""
+    found = find_active_trials(runs_dir)
+    return found[0] if found else None
 
 
 def find_log(trial_dir: Path) -> Path | None:
@@ -717,23 +743,34 @@ def read_feed(path: Path) -> list[dict[str, str]]:
         window = min(int(window * min(max(ratio, 2.0), 8.0)), MAX_TAIL_BYTES)
 
 
-def read_activity(runs_dir: Path = RUNS_DIR) -> dict[str, Any]:
-    """Everything the live feed panel needs, or {"active": False}."""
-    found = find_active_trial(runs_dir)
-    if not found:
-        return {"active": False}
+def trial_key(found: dict[str, Any]) -> str:
+    """Stable identifier for one in-flight trial.
 
-    manifest = found["manifest"]
+    Qualified by run directory: two benchmarks can be in flight at once, and a
+    task name alone would collide between them and swap the feed under the
+    reader without anything on screen changing.
+    """
+    return f"{found['job_dir'].name}/{found['trial_dir'].name}"
+
+
+def _trial_payload(
+    found: dict[str, Any], now: float, with_entries: bool
+) -> dict[str, Any]:
+    """One trial's live state. `with_entries` is the only expensive half.
+
+    Everything else here costs a stat, which is what makes a tab per concurrent
+    trial affordable: the tail is read for the selected trial only, so a
+    four-concurrent run costs one tail read per poll rather than four.
+    """
     trial_dir: Path = found["trial_dir"]
     log_path: Path | None = found["log_path"]
+    manifest = found["manifest"]
 
     # Trial dirs are named "<task>__<suffix>"; the task is the readable half.
-    task_name = trial_dir.name.rsplit("__", 1)[0]
-
     payload: dict[str, Any] = {
-        "active": True,
+        "key": trial_key(found),
         "run_id": found["job_dir"].name,
-        "task": task_name,
+        "task": trial_dir.name.rsplit("__", 1)[0],
         "harness": manifest.get("harness"),
         "harness_label": manifest.get("harness_label") or manifest.get("harness"),
         "model_label": (manifest.get("model") or {}).get("label"),
@@ -751,7 +788,6 @@ def read_activity(runs_dir: Path = RUNS_DIR) -> dict[str, Any]:
     # trial, 72 seconds of them -- and there is no ceiling on how wrong that
     # gets: a cold image pull is minutes, and a trial can show more elapsed than
     # the agent timeout allows, which is what gave this away.
-    now = time.time()
     try:
         trial_started = trial_dir.stat().st_ctime
     except OSError:
@@ -776,6 +812,40 @@ def read_activity(runs_dir: Path = RUNS_DIR) -> dict[str, Any]:
         payload["log_name"] = log_path.name
         payload["log_bytes"] = size
         payload["silent_s"] = _quiet_seconds(log_path, size)
-        payload["entries"] = read_feed(log_path)
+        if with_entries:
+            payload["entries"] = read_feed(log_path)
 
+    return payload
+
+
+def read_activity(
+    runs_dir: Path = RUNS_DIR, selected: str | None = None
+) -> dict[str, Any]:
+    """Everything the live feed panel needs, or {"active": False}.
+
+    The selected trial's fields sit at the top level, so a caller that knows
+    nothing about concurrency still reads the same shape it always did.
+    `trials` lists every trial in flight for the tab strip.
+    """
+    active = find_active_trials(runs_dir)
+    if not active:
+        return {"active": False}
+
+    now = time.time()
+    # An explicit selection that has since finished is not an error and must not
+    # silently show a different trial as though it were the one asked for: fall
+    # back to the most recent and say so, which is what lets the page move the
+    # tab rather than appearing to mislabel the feed.
+    chosen = next((f for f in active if trial_key(f) == selected), None)
+    stale = selected is not None and chosen is None
+    if chosen is None:
+        chosen = active[0]
+
+    payload = _trial_payload(chosen, now, with_entries=True)
+    payload["active"] = True
+    payload["selected_finished"] = stale
+    # Summaries only, the selected trial included: its entries already sit at the
+    # top level, and repeating them here would double the largest field in the
+    # response for nothing.
+    payload["trials"] = [_trial_payload(f, now, with_entries=False) for f in active]
     return payload

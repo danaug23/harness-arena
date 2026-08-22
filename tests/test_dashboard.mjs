@@ -479,6 +479,115 @@ if (!process.argv[2]) {
   console.log(`${both ? "PASS" : "FAIL"}  the agent clock names what it excludes`);
   if (!both) failed++;
 
+  /* ---- one tab per concurrent trial ------------------------------------ *
+   *
+   * At --n-concurrent 4 there are four trials in flight and the feed used to
+   * show whichever log had been written to most recently, discarding the other
+   * three -- and swapping between them from poll to poll, since which log is
+   * newest changes every few seconds. Observed on a live run: four trials
+   * running, one visible, no way to reach the rest.
+   */
+  const trial = (task, extra) => Object.assign({
+    key: `run1/${task}__aaa`, run_id: "run1", task,
+    harness: "hermes", harness_label: "Hermes Agent", model_label: "Test Model",
+    phase: "agent", elapsed_s: 600, setup_s: 12, log_bytes: 1234,
+    silent_s: 2, entries: [],
+  }, extra);
+
+  const four = [
+    trial("write-compressor"),
+    trial("winning-avg-corewars", { silent_s: 600 }),
+    trial("dna-assembly", { phase: "setting up", elapsed_s: null, log_bytes: 0 }),
+    trial("merge-diff-arc-agi-task"),
+  ];
+
+  // A single trial must NOT grow a tab strip: one tab is a control that cannot
+  // do anything, which reads as broken rather than as nothing to switch to.
+  vm.runInContext(
+    `state.feedTrial = null; state.activity = ${feedState({
+      key: "run1/some-task__aaa", trials: [trial("some-task")],
+    })};`, ctx);
+  const lone = vm.runInContext("renderFeed()", ctx);
+  const noStrip = !/feed-tabs/.test(lone);
+  console.log(`${noStrip ? "PASS" : "FAIL"}  a lone trial grows no tab strip`);
+  if (!noStrip) failed++;
+
+  vm.runInContext(
+    `state.feedTrial = null; state.activity = ${feedState({
+      key: "run1/write-compressor__aaa", task: "write-compressor", trials: four,
+    })};`, ctx);
+  const many = run("live feed (4 concurrent)", "renderFeed()", 200);
+
+  const everyTab = four.every((t) => many.includes(`data-feed-trial="${t.key}"`));
+  console.log(`${everyTab ? "PASS" : "FAIL"}  every running trial gets a tab`);
+  if (!everyTab) failed++;
+
+  // Exactly one selected, and it is the one whose tail is being shown. Two
+  // selected tabs, or none, is how a strip stops explaining which feed you are
+  // reading.
+  const selected = (many.match(/aria-selected="true"/g) || []).length;
+  const rightOne = selected === 1
+    && /data-feed-trial="run1\/write-compressor__aaa"\s+aria-selected="true"/.test(many);
+  console.log(`${rightOne ? "PASS" : "FAIL"}  exactly the shown trial is selected`);
+  if (!rightOne) failed++;
+
+  // The strip is the only place a quiet or still-building trial is visible once
+  // another trial is selected, so its state has to survive being unselected.
+  const dots = /<i class="quiet">/.test(many) && /<i class="setup">/.test(many);
+  console.log(`${dots ? "PASS" : "FAIL"}  tabs carry quiet and setting-up state`);
+  if (!dots) failed++;
+
+  const counted = /4 trials running/.test(many);
+  console.log(`${counted ? "PASS" : "FAIL"}  the panel note counts the trials`);
+  if (!counted) failed++;
+
+  // Unpinned it follows the newest and says so; pinned it offers the way back.
+  const followsByDefault = /following newest/.test(many)
+    && !/data-feed-trial=""/.test(many);
+  console.log(`${followsByDefault ? "PASS" : "FAIL"}  unpinned feed says it follows newest`);
+  if (!followsByDefault) failed++;
+
+  vm.runInContext(`state.feedTrial = "run1/dna-assembly__aaa";`, ctx);
+  const pinned = vm.runInContext("renderFeed()", ctx);
+  const canUnpin = /data-feed-trial=""/.test(pinned) && /follow newest/.test(pinned);
+  console.log(`${canUnpin ? "PASS" : "FAIL"}  a pinned feed offers follow-newest`);
+  if (!canUnpin) failed++;
+
+  // A pinned trial that finished is the case where the feed legitimately shows
+  // something other than what was asked for. Silence there is indistinguishable
+  // from the panel mislabelling its own contents.
+  vm.runInContext(
+    `state.activity = ${feedState({
+      key: "run1/write-compressor__aaa", task: "write-compressor",
+      trials: four, selected_finished: true,
+    })};`, ctx);
+  const moved = vm.runInContext("renderFeed()", ctx);
+  const saidSo = /finished/.test(moved) && /write-compressor/.test(moved);
+  console.log(`${saidSo ? "PASS" : "FAIL"}  a finished pin says the feed moved`);
+  if (!saidSo) failed++;
+
+  // The pin has to reach the server, or every tab shows the same trial.
+  vm.runInContext(`state.feedTrial = "run1/a b__x";`, ctx);
+  const pinnedUrl = vm.runInContext("activityUrl()", ctx);
+  const encoded = pinnedUrl === "/api/activity?trial=run1%2Fa%20b__x";
+  console.log(`${encoded ? "PASS" : "FAIL"}  the pinned trial is sent url-encoded`);
+  if (!encoded) failed++;
+
+  vm.runInContext("state.feedTrial = null;", ctx);
+  const plainUrl = vm.runInContext("activityUrl()", ctx);
+  const bare = plainUrl === "/api/activity";
+  console.log(`${bare ? "PASS" : "FAIL"}  unpinned asks for no particular trial`);
+  if (!bare) failed++;
+
+  // Older payloads have no `trials` at all. The panel predates the strip and
+  // must not start throwing on a server that has not been restarted yet.
+  vm.runInContext(
+    `state.feedTrial = null; state.activity = ${feedState({})};`, ctx);
+  const legacy = run("live feed (no trials key)", "renderFeed()", 200);
+  const survives = !/feed-tabs/.test(legacy) && /some-task/.test(legacy);
+  console.log(`${survives ? "PASS" : "FAIL"}  a payload with no trials list still renders`);
+  if (!survives) failed++;
+
   // No run in flight -> no panel at all, not an empty box.
   vm.runInContext(`state.activity = {"active": false};`, ctx);
   const off = vm.runInContext("renderFeed()", ctx);

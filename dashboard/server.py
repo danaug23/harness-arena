@@ -913,7 +913,12 @@ def _int_param(query: dict[str, list[str]], name: str, default: int) -> int:
 
 ROUTES: dict[tuple[str, str], Route] = {
     ("GET", "/api/results"): lambda app, _p, _q: app.cache.get(),
-    ("GET", "/api/activity"): lambda app, _p, _q: read_activity(app.runs_dir),
+    # `trial` selects one of the concurrently running trials; omitted, the
+    # most recently active one is served, which is what every caller before
+    # tabs existed expected.
+    ("GET", "/api/activity"): lambda app, _p, q: read_activity(
+        app.runs_dir, selected=(q.get("trial") or [None])[0]
+    ),
     ("GET", "/api/health"): lambda _app, _p, _q: {"ok": True},
     ("GET", "/api/state"): lambda app, _p, _q: app.state(),
     ("GET", "/api/doctor"): lambda app, _p, _q: app.doctor(),
